@@ -12,6 +12,7 @@ import type {
   PluginVisualizerHost,
   PluginVisualizerSize,
   PluginVisualizerState,
+  PluginVisualizerTrack,
 } from "../types/viboplr-visualizer";
 import {
   type Band,
@@ -70,7 +71,8 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
   const unsubs: (() => void)[] = [];
 
   /** Lay out and repaint. Called on a queue or size change — never per frame. */
-  function repress(durations: (number | null)[]) {
+  function repress(tracks: readonly PluginVisualizerTrack[]) {
+    const durations = tracks.map((t) => t.durationSecs);
     const box = Math.max(40, Math.min(size.width, size.height));
     geo = buildGeometry(box);
     mountPoint = buildArmMount(geo);
@@ -110,7 +112,10 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
     // Mirror the arm for a left-hand crop so the playhead survives it.
     deck.classList.toggle("mirror-arm", crop.mirrorArm);
 
-    paintVinylSurface(canvas, geo, bands);
+    // Each band is grooved from its OWN track's waveform, where the host had one
+    // cached. Absent peaks fall back to an even groove rather than a blank band,
+    // so a queue of streaming tracks still looks like a record.
+    paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
     renderGapRings();
   }
 
@@ -277,7 +282,7 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
       if (state.queueRevision !== lastRevision || applied !== lastApplied) {
         lastRevision = state.queueRevision;
         lastApplied = applied;
-        repress(state.queue.map((t) => t.durationSecs));
+        repress(state.queue);
       }
       deck.style.setProperty("--tilt", `${options.tilt}deg`);
       if (bands.length === 0) return;

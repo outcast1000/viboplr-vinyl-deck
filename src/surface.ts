@@ -29,6 +29,8 @@ const GROOVE_PITCH = 1.15;
 const GUIDE_PITCH = 1.5;
 
 export type BandPeaks = ArrayLike<number> | null | undefined;
+// `readonly number[]` from the contract satisfies ArrayLike, so no cast is needed
+// at the call site.
 
 /**
  * Paint the record surface. Cheap enough to redraw on resize, but it only needs

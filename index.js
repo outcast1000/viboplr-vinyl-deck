@@ -158,9 +158,11 @@ var __viboplrPlugin = function(exports) {
     for (let r = rRim - 1.2; r > rLeadIn; r -= GUIDE_PITCH) ring(r, 1, white(0.07));
     ring(rLeadIn + 0.6, 1, black(0.95));
     bands.forEach((b, i) => {
+      const p = peaks?.[i];
+      const n = p ? p.length : 0;
       for (let r = b.outer; r >= b.inner; r -= GROOVE_PITCH) {
-        b.width > 0 ? (b.outer - r) / b.width : 0;
-        const amp = 0.5;
+        const frac = b.width > 0 ? (b.outer - r) / b.width : 0;
+        const amp = n > 0 ? p[Math.min(n - 1, Math.floor(frac * n))] : 0.5;
         ring(r, 0.85, white(GROOVE_BASE + amp * WAVE_PRESENCE));
       }
       const gap = gapAfter(bands, i);
@@ -464,7 +466,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
     let lastApplied = "";
     let currentIndex = -1;
     const unsubs = [];
-    function repress(durations) {
+    function repress(tracks) {
+      const durations = tracks.map((t) => t.durationSecs);
       const box = Math.max(40, Math.min(size.width, size.height));
       geo = buildGeometry(box);
       mountPoint = buildArmMount(geo);
@@ -485,7 +488,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
       lever.style.left = `${mountPoint.px + 7 * k}px`;
       lever.style.top = `${mountPoint.py + 24 * k}px`;
       deck.classList.toggle("mirror-arm", crop.mirrorArm);
-      paintVinylSurface(canvas, geo, bands);
+      paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
       renderGapRings();
     }
     function renderGapRings() {
@@ -572,7 +575,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
         if (state.queueRevision !== lastRevision || applied !== lastApplied) {
           lastRevision = state.queueRevision;
           lastApplied = applied;
-          repress(state.queue.map((t) => t.durationSecs));
+          repress(state.queue);
         }
         deck.style.setProperty("--tilt", `${options2.tilt}deg`);
         if (bands.length === 0) return;

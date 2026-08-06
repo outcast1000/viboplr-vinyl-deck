@@ -85,13 +85,17 @@ function opts(over: Partial<DeckOptions> = {}): DeckOptions {
 }
 
 let arcCount = 0;
+let strokes: string[] = [];
 const origRect = Element.prototype.getBoundingClientRect;
 
 beforeEach(() => {
   arcCount = 0;
+  strokes = [];
   HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
     setTransform: () => {}, clearRect: () => {}, beginPath: () => {},
-    arc: () => { arcCount++; }, stroke: () => {}, fill: () => {}, fillText: () => {},
+    arc: () => { arcCount++; },
+    stroke() { strokes.push(String((this as { strokeStyle: string }).strokeStyle)); },
+    fill: () => {}, fillText: () => {},
     createRadialGradient: () => ({ addColorStop: () => {} }),
     createLinearGradient: () => ({ addColorStop: () => {} }),
     lineWidth: 0, strokeStyle: "", fillStyle: "", font: "", textAlign: "",
@@ -350,6 +354,59 @@ describe("vinyl deck visualizer", () => {
     v.destroy();
     expect(resizeHandlers.length).toBe(0);
     expect(skinHandlers.length).toBe(0);
+  });
+
+  it("grooves each band from its OWN track's waveform", () => {
+    // The point of the feature: a track's audio changes how its region of the
+    // record is drawn. A loud passage must not paint the same as a quiet one.
+    // A ramp, so a working implementation yields many distinct groove alphas.
+    const ramp = Array.from({ length: 200 }, (_, i) => 0.05 + (i / 199) * 0.95);
+    const withPeaks: PluginVisualizerTrack[] = [
+      { ...QUEUE[0], durationSecs: 200, peaks: ramp },
+    ];
+
+    const { host } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ queue: withPeaks, currentIndex: 0, queueRevision: 41 }));
+
+    const whites = () => new Set(strokes.filter((c) => c.startsWith("rgba(255,255,255,"))).size;
+    const textured = whites();
+
+    // The rim, lead-in, land edges and run-out are also white strokes, and are
+    // IDENTICAL in both runs — so only the difference between the two is evidence
+    // about the grooves. An absolute threshold here would pass with no waveform
+    // effect at all.
+    strokes = [];
+    const noPeaks: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: 200 }];
+    v.frame(makeState({ queue: noPeaks, currentIndex: 0, queueRevision: 42 }));
+    const flat = whites();
+
+    expect(textured).toBeGreaterThan(flat + 20);
+  });
+
+  it("tolerates peaks arriving later, on a bumped revision", () => {
+    // The host reads the waveform cache asynchronously, so a band is drawn plain
+    // first and re-pressed once its peaks land.
+    const { host } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+
+    const plain: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: 120 }];
+    v.frame(makeState({ queue: plain, currentIndex: 0, queueRevision: 7 }));
+    const before = new Set(strokes.filter((c) => c.startsWith("rgba(255,255,255,"))).size;
+
+    strokes = [];
+    const enriched: PluginVisualizerTrack[] = [
+      {
+        ...QUEUE[0],
+        durationSecs: 120,
+        peaks: Array.from({ length: 120 }, (_, i) => 0.05 + (i / 119) * 0.95),
+      },
+    ];
+    v.frame(makeState({ queue: enriched, currentIndex: 0, queueRevision: 8 }));
+    const after = new Set(strokes.filter((c) => c.startsWith("rgba(255,255,255,"))).size;
+    expect(after).toBeGreaterThan(before + 10);
   });
 
   it("reads no skin token, so it cannot break a skin", () => {
