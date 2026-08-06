@@ -1,0 +1,4 @@
+node_modules/
+dist/
+vinyl-deck.zip
+.DS_Store

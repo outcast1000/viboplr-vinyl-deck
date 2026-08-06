@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - run: npm ci
+      - name: Typecheck, test, build
+        run: npm run verify
+      - name: Committed index.js must match a fresh build
+        # index.js is generated but committed, so the gallery can install straight
+        # from a release. If the two diverge, users get code nobody reviewed.
+        run: |
+          if ! git diff --quiet -- index.js; then
+            echo "::error::index.js is out of date. Run 'npm run build' and commit the result."
+            git diff --stat -- index.js
+            exit 1
+          fi
+          echo "index.js matches a fresh build"
