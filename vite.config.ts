@@ -13,14 +13,17 @@ import { resolve } from "node:path";
  * Vite refuses to emit into its own root, so output goes to dist/ and
  * scripts/finish-build.mjs moves the one artifact to ./index.js — which is what
  * the packaged zip contains and what the host reads.
+ *
+ * Paths use import.meta.dirname, not __dirname: vite 8's native config loader
+ * does not support the latter.
  */
 export default defineConfig({
   build: {
-    outDir: resolve(__dirname, "dist"),
+    outDir: resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
     minify: false, // a readable bundle is worth more than the bytes here
     lib: {
-      entry: resolve(__dirname, "src/index.ts"),
+      entry: resolve(import.meta.dirname, "src/index.ts"),
       formats: ["iife"],
       name: "__viboplrPlugin",
       fileName: () => "index.js",
