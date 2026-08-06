@@ -8,6 +8,10 @@ inter-track gap.
 - Geometry derives from a real 12" LP — 302mm disc, 292mm maximum recorded
   diameter, 100mm label — so the unplayable outer band is the true ~3.3% of the
   radius rather than an invented moat.
+- **The grooves are cut from each track's own waveform.** Loud passages read as
+  brighter, denser grooves and quiet ones recede, so the texture of the record is
+  the music. Uses only waveforms the app has already cached, so it costs nothing;
+  tracks without one get an even groove.
 - Cue by dragging the tonearm or scrubbing the grooves. Landing on another band
   plays that track; landing inside the one already playing seeks within it.
 - The platter never stops. On pause the cue lever raises the front of the arm off
