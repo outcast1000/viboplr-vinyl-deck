@@ -110,47 +110,84 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   border: 1px dashed color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
-.scrub { position: absolute; inset: 0; border-radius: 50%; cursor: ew-resize; z-index: 15; }
+/* There is no groove-scrub layer. The record is not a control: the headshell is
+   the only thing you can grab, so a press on the surface does nothing at all.
+   (A full-platter hit layer used to sit here at z-index 15 and cue from anywhere
+   on the disc.) */
 
-/* .armwrap and .armrise are inset:0, so they cover the WHOLE platter and paint
-   above .scrub — without this they swallow every press and neither scrubbing nor
-   grabbing the arm works at all.
-   Only these two. Do NOT add .armlift: it sits INSIDE .arm, so disabling it
-   disables the arm's own graphics (the tube, pivot and headshell all live in it)
-   and re-enabling .arm cannot recover them — .arm is a height:0 box with no
-   hittable area of its own. */
+/* .armwrap and .armrise are inset:0, so they cover the WHOLE platter — without
+   disabling them they swallow every press and even the headshell is unreachable.
+   Only these two plus .arm. Do NOT add .armlift: it sits INSIDE .arm, so
+   disabling it disables the arm's own graphics (the tube, pivot and headshell
+   all live in it) and re-enabling .arm cannot recover them — .arm is a height:0
+   box with no hittable area of its own. .head re-enables itself instead. */
 
 /* Cue lever. The mechanism you actually operate: knob down = arm lowered onto the
-   record, knob up = arm raised. Sits beside the arm base, clear of the platter.
+   record, knob up = arm raised. Mounted in the bottom-right corner, the roomiest
+   part of a square holding an inscribed circle and the one the arm never visits
+   (see the placement note in visualizer.ts).
    Shares the arm's asymmetric timing — flick up, settle down — so the two read as
-   one linkage rather than two animations that happen together. */
+   one linkage rather than two animations that happen together.
+
+   Three parts, so it reads as a mechanism rather than a pill: a housing sunk into
+   the plinth, a travel slot cut down its middle, and a knurled knob that
+   overhangs the housing so it looks pinchable. */
 .lever {
   position: absolute;
   width: calc(11px * var(--k));
-  height: calc(34px * var(--k));
-  border-radius: calc(4px * var(--k));
-  background: linear-gradient(180deg, #23262e, #14171d);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.6), inset 0 1px 1px rgba(255,255,255,.14);
-  pointer-events: none;
+  height: calc(22px * var(--k));
+  border-radius: calc(5.5px * var(--k));
+  background: linear-gradient(180deg, #1b1e25, #0d1015);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.7),
+    inset 0 1px 1px rgba(255,255,255,.12),
+    0 calc(2px * var(--k)) calc(5px * var(--k)) rgba(0,0,0,.45);
+  /* Operable, not decorative: clicking it raises/lowers the head, which is the
+     paused/playing state. */
+  pointer-events: auto;
+  cursor: pointer;
   z-index: 21;
 }
+/* The slot the knob rides in. */
+.lever::before {
+  content: "";
+  position: absolute;
+  left: 50%; margin-left: calc(-1.5px * var(--k)); width: calc(3px * var(--k));
+  top: calc(3px * var(--k)); bottom: calc(3px * var(--k));
+  border-radius: calc(2px * var(--k));
+  background: #05070a;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.9);
+}
+.lever:hover i { filter: brightness(1.15); }
+.lever:active i { filter: brightness(.95); }
 .lever i {
   position: absolute;
-  left: calc(1.5px * var(--k)); right: calc(1.5px * var(--k));
-  height: calc(13px * var(--k));
-  bottom: calc(1.5px * var(--k));
+  /* Overhangs the housing on both sides — the part you'd actually pinch. */
+  left: calc(-3px * var(--k)); right: calc(-3px * var(--k));
+  height: calc(9px * var(--k));
+  bottom: calc(2.5px * var(--k));
   border-radius: calc(3px * var(--k));
-  background: linear-gradient(180deg, #eef1f6, #a7aeba 60%, #6a7180);
-  box-shadow: 0 1px 2px rgba(0,0,0,.5);
-  transition: bottom .58s cubic-bezier(.16,.84,.28,1);
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(0,0,0,.20) 0 calc(1px * var(--k)),
+      rgba(255,255,255,.10) calc(1px * var(--k)) calc(2px * var(--k))),
+    linear-gradient(180deg, #f5f8fc, #bcc3cf 55%, #6e7583);
+  box-shadow: 0 calc(1px * var(--k)) calc(2px * var(--k)) rgba(0,0,0,.55),
+              inset 0 1px 1px rgba(255,255,255,.75);
+  transition: bottom .58s cubic-bezier(.16,.84,.28,1), filter .15s ease;
 }
 .lifted .lever i {
-  bottom: calc(100% - 14.5px * var(--k));
-  transition: bottom .24s cubic-bezier(.34,1.5,.6,1);
+  bottom: calc(100% - 11.5px * var(--k));
+  transition: bottom .24s cubic-bezier(.34,1.5,.6,1), filter .15s ease;
 }
 
-.armwrap, .armrise { pointer-events: none; }
-.arm { pointer-events: auto; }
+/* Nothing in the arm assembly is hittable except the headshell. The tube,
+   pivot and counterweight sweep across most of the record, and while they were
+   grabbable they swallowed presses meant for the groove scrub underneath. Now
+   they pass through, and .head re-enables itself below — a child can re-enable
+   what its ancestor disabled, and .head is a real box, unlike .arm (height: 0,
+   no hit area of its own; see the note above). */
+.armwrap, .armrise, .arm { pointer-events: none; }
 
 .armwrap { position: absolute; inset: 0; transform-style: preserve-3d; }
 
@@ -167,11 +204,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
    short linear transition — just enough to smooth a cue jump. */
 .arm {
   position: absolute; height: 0; z-index: 20; transform-origin: 0 50%;
-  transform-style: preserve-3d; cursor: grab;
+  transform-style: preserve-3d;
   transform: rotate(var(--deg));
   transition: transform .22s linear;
 }
-.arm:active { cursor: grabbing; }
+/* Under the cursor the tracking ease reads as lag, so the arm follows the hand
+   exactly while a drag is live. */
+.dragging .arm { transition: none; }
 
 /* The LIFT.
    A tonearm's base is bolted down and only the front swings up, so nothing here
@@ -234,7 +273,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   transition: transform .58s cubic-bezier(.16,.84,.28,1);
   background: linear-gradient(180deg, #f2f5f9, #aeb5c1 52%, #656c7a);
   box-shadow: inset 0 1px 1px rgba(255,255,255,.65), 0 0 0 1px rgba(0,0,0,.5);
+  /* The one grabbable part of the arm — re-enabled after the assembly above
+     turned hit-testing off. */
+  pointer-events: auto;
+  cursor: grab;
 }
+.head:active { cursor: grabbing; }
 /* Cartridge, centred on the arm's end = the stylus/contact point. */
 .head::after {
   content: ""; position: absolute; right: calc(-1px * var(--k)); top: 50%; margin-top: calc(-3px * var(--k));

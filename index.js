@@ -390,47 +390,84 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   border: 1px dashed color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
-.scrub { position: absolute; inset: 0; border-radius: 50%; cursor: ew-resize; z-index: 15; }
+/* There is no groove-scrub layer. The record is not a control: the headshell is
+   the only thing you can grab, so a press on the surface does nothing at all.
+   (A full-platter hit layer used to sit here at z-index 15 and cue from anywhere
+   on the disc.) */
 
-/* .armwrap and .armrise are inset:0, so they cover the WHOLE platter and paint
-   above .scrub — without this they swallow every press and neither scrubbing nor
-   grabbing the arm works at all.
-   Only these two. Do NOT add .armlift: it sits INSIDE .arm, so disabling it
-   disables the arm's own graphics (the tube, pivot and headshell all live in it)
-   and re-enabling .arm cannot recover them — .arm is a height:0 box with no
-   hittable area of its own. */
+/* .armwrap and .armrise are inset:0, so they cover the WHOLE platter — without
+   disabling them they swallow every press and even the headshell is unreachable.
+   Only these two plus .arm. Do NOT add .armlift: it sits INSIDE .arm, so
+   disabling it disables the arm's own graphics (the tube, pivot and headshell
+   all live in it) and re-enabling .arm cannot recover them — .arm is a height:0
+   box with no hittable area of its own. .head re-enables itself instead. */
 
 /* Cue lever. The mechanism you actually operate: knob down = arm lowered onto the
-   record, knob up = arm raised. Sits beside the arm base, clear of the platter.
+   record, knob up = arm raised. Mounted in the bottom-right corner, the roomiest
+   part of a square holding an inscribed circle and the one the arm never visits
+   (see the placement note in visualizer.ts).
    Shares the arm's asymmetric timing — flick up, settle down — so the two read as
-   one linkage rather than two animations that happen together. */
+   one linkage rather than two animations that happen together.
+
+   Three parts, so it reads as a mechanism rather than a pill: a housing sunk into
+   the plinth, a travel slot cut down its middle, and a knurled knob that
+   overhangs the housing so it looks pinchable. */
 .lever {
   position: absolute;
   width: calc(11px * var(--k));
-  height: calc(34px * var(--k));
-  border-radius: calc(4px * var(--k));
-  background: linear-gradient(180deg, #23262e, #14171d);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.6), inset 0 1px 1px rgba(255,255,255,.14);
-  pointer-events: none;
+  height: calc(22px * var(--k));
+  border-radius: calc(5.5px * var(--k));
+  background: linear-gradient(180deg, #1b1e25, #0d1015);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.7),
+    inset 0 1px 1px rgba(255,255,255,.12),
+    0 calc(2px * var(--k)) calc(5px * var(--k)) rgba(0,0,0,.45);
+  /* Operable, not decorative: clicking it raises/lowers the head, which is the
+     paused/playing state. */
+  pointer-events: auto;
+  cursor: pointer;
   z-index: 21;
 }
+/* The slot the knob rides in. */
+.lever::before {
+  content: "";
+  position: absolute;
+  left: 50%; margin-left: calc(-1.5px * var(--k)); width: calc(3px * var(--k));
+  top: calc(3px * var(--k)); bottom: calc(3px * var(--k));
+  border-radius: calc(2px * var(--k));
+  background: #05070a;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.9);
+}
+.lever:hover i { filter: brightness(1.15); }
+.lever:active i { filter: brightness(.95); }
 .lever i {
   position: absolute;
-  left: calc(1.5px * var(--k)); right: calc(1.5px * var(--k));
-  height: calc(13px * var(--k));
-  bottom: calc(1.5px * var(--k));
+  /* Overhangs the housing on both sides — the part you'd actually pinch. */
+  left: calc(-3px * var(--k)); right: calc(-3px * var(--k));
+  height: calc(9px * var(--k));
+  bottom: calc(2.5px * var(--k));
   border-radius: calc(3px * var(--k));
-  background: linear-gradient(180deg, #eef1f6, #a7aeba 60%, #6a7180);
-  box-shadow: 0 1px 2px rgba(0,0,0,.5);
-  transition: bottom .58s cubic-bezier(.16,.84,.28,1);
+  background:
+    repeating-linear-gradient(180deg,
+      rgba(0,0,0,.20) 0 calc(1px * var(--k)),
+      rgba(255,255,255,.10) calc(1px * var(--k)) calc(2px * var(--k))),
+    linear-gradient(180deg, #f5f8fc, #bcc3cf 55%, #6e7583);
+  box-shadow: 0 calc(1px * var(--k)) calc(2px * var(--k)) rgba(0,0,0,.55),
+              inset 0 1px 1px rgba(255,255,255,.75);
+  transition: bottom .58s cubic-bezier(.16,.84,.28,1), filter .15s ease;
 }
 .lifted .lever i {
-  bottom: calc(100% - 14.5px * var(--k));
-  transition: bottom .24s cubic-bezier(.34,1.5,.6,1);
+  bottom: calc(100% - 11.5px * var(--k));
+  transition: bottom .24s cubic-bezier(.34,1.5,.6,1), filter .15s ease;
 }
 
-.armwrap, .armrise { pointer-events: none; }
-.arm { pointer-events: auto; }
+/* Nothing in the arm assembly is hittable except the headshell. The tube,
+   pivot and counterweight sweep across most of the record, and while they were
+   grabbable they swallowed presses meant for the groove scrub underneath. Now
+   they pass through, and .head re-enables itself below — a child can re-enable
+   what its ancestor disabled, and .head is a real box, unlike .arm (height: 0,
+   no hit area of its own; see the note above). */
+.armwrap, .armrise, .arm { pointer-events: none; }
 
 .armwrap { position: absolute; inset: 0; transform-style: preserve-3d; }
 
@@ -447,11 +484,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
    short linear transition — just enough to smooth a cue jump. */
 .arm {
   position: absolute; height: 0; z-index: 20; transform-origin: 0 50%;
-  transform-style: preserve-3d; cursor: grab;
+  transform-style: preserve-3d;
   transform: rotate(var(--deg));
   transition: transform .22s linear;
 }
-.arm:active { cursor: grabbing; }
+/* Under the cursor the tracking ease reads as lag, so the arm follows the hand
+   exactly while a drag is live. */
+.dragging .arm { transition: none; }
 
 /* The LIFT.
    A tonearm's base is bolted down and only the front swings up, so nothing here
@@ -514,7 +553,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   transition: transform .58s cubic-bezier(.16,.84,.28,1);
   background: linear-gradient(180deg, #f2f5f9, #aeb5c1 52%, #656c7a);
   box-shadow: inset 0 1px 1px rgba(255,255,255,.65), 0 0 0 1px rgba(0,0,0,.5);
+  /* The one grabbable part of the arm — re-enabled after the assembly above
+     turned hit-testing off. */
+  pointer-events: auto;
+  cursor: grab;
 }
+.head:active { cursor: grabbing; }
 /* Cartridge, centred on the arm's end = the stylus/contact point. */
 .head::after {
   content: ""; position: absolute; right: calc(-1px * var(--k)); top: 50%; margin-top: calc(-3px * var(--k));
@@ -566,6 +610,18 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let arm;
 		let gapLayer;
 		let lever;
+		/** Last `playing` seen in frame(). The lever states the value it wants rather
+		*  than toggling, per the contract, so it has to know the current one. */
+		let playing = false;
+		/**
+		* True between pointerdown and pointerup on the headshell.
+		*
+		* While it is set, frame() must NOT write the arm angle. The host's position
+		* doesn't change until the drag is committed on release, so frame() would
+		* rewrite the angle from the old position on the very next tick and snap the
+		* head back under the user's cursor — which read as the arm not moving at all.
+		*/
+		let dragging = false;
 		/** The plugin sandbox passes `document: undefined` and a frozen `window`, so
 		*  ambient DOM is unavailable by design. Everything comes through the one
 		*  handle the contract grants: the shadow root. */
@@ -601,8 +657,14 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			arm.style.top = `${mountPoint.py}px`;
 			arm.style.width = `${mountPoint.length}px`;
 			const k = geo.size / 368;
-			lever.style.left = `${mountPoint.px + 7 * k}px`;
-			lever.style.top = `${mountPoint.py + 24 * k}px`;
+			const leverW = 11 * k;
+			const leverH = 22 * k;
+			const diagonal = geo.rEdge * 1.2 * Math.SQRT1_2;
+			const inset = 6 * k;
+			const leverX = Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset);
+			const leverY = Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset);
+			lever.style.left = `${crop.mirrorArm ? geo.size - leverX - leverW : leverX}px`;
+			lever.style.top = `${leverY}px`;
 			deck.classList.toggle("mirror-arm", crop.mirrorArm);
 			paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
 			renderGapRings();
@@ -640,23 +702,33 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			return Math.hypot(x, y);
 		}
 		/**
-		* Cue by dragging. Uses pointer capture on the element itself rather than
-		* window listeners: the sandbox exposes no ambient `window`, and capture is
-		* the right primitive regardless — the drag keeps tracking outside the disc
-		* and can't be stolen by another element. (Pointer events, not HTML5 DnD,
-		* which the repo bans in this webview.)
+		* Cue by dragging the headshell. This is the ONLY cue gesture: the record
+		* itself is not a control. Pressing the disc used to scrub the grooves, which
+		* meant a stray click anywhere on the surface jumped the queue — and made the
+		* arm look like something that merely followed along rather than the thing you
+		* operate. A tonearm is the handle; the record just turns.
+		*
+		* Uses pointer capture on the element itself rather than window listeners: the
+		* sandbox exposes no ambient `window`, and capture is the right primitive
+		* regardless — the drag keeps tracking outside the disc and can't be stolen by
+		* another element. (Pointer events, not HTML5 DnD, which the repo bans in this
+		* webview.)
 		*/
-		function onDown(e, fromArm = false) {
+		function onDown(e) {
 			if (e.button !== 0 || bands.length === 0) return;
-			const r0 = radiusAt(e.clientX, e.clientY);
-			if (!fromArm && (r0 < geo.rProgIn || r0 > geo.rLeadIn)) return;
 			e.preventDefault();
 			const target = e.currentTarget;
-			let last = fromArm ? null : radiusToPosition(bands, r0);
+			let last = null;
+			dragging = true;
+			deck.classList.add("dragging");
 			const move = (ev) => {
-				last = radiusToPosition(bands, clampToProgram(radiusAt(ev.clientX, ev.clientY), geo));
+				const r = clampToProgram(radiusAt(ev.clientX, ev.clientY), geo);
+				last = radiusToPosition(bands, r);
+				arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
 			};
 			const up = () => {
+				dragging = false;
+				deck.classList.remove("dragging");
 				target.removeEventListener("pointermove", move);
 				target.removeEventListener("pointerup", up);
 				target.removeEventListener("pointercancel", up);
@@ -682,7 +754,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				root.append(style);
 				deck = doc.createElement("div");
 				deck.className = "deck lifted";
-				deck.innerHTML = "<div class=\"platter\"><div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"gaps\"></div><div class=\"hole\"></div><div class=\"scrub\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div><div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
+				deck.innerHTML = "<div class=\"platter\"><div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"gaps\"></div><div class=\"hole\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div><div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
 				root.append(deck);
 				platter = deck.querySelector(".platter");
 				spin = deck.querySelector(".spin");
@@ -691,10 +763,10 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				arm = deck.querySelector(".arm");
 				gapLayer = deck.querySelector(".gaps");
 				lever = deck.querySelector(".lever");
-				deck.querySelector(".scrub").addEventListener("pointerdown", onDown);
-				arm.addEventListener("pointerdown", (e) => {
-					e.stopPropagation();
-					onDown(e, true);
+				deck.querySelector(".head").addEventListener("pointerdown", onDown);
+				lever.addEventListener("click", () => {
+					if (typeof host.actions.setPlaying !== "function") return;
+					host.actions.setPlaying(!playing);
 				});
 				unsubs.push(h.onResize((s) => {
 					size = s;
@@ -703,6 +775,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				unsubs.push(h.onSkinChange(() => {}));
 			},
 			frame(state) {
+				playing = state.playing;
 				const applied = `${options.composition}|${options.emphasiseGaps}`;
 				if (state.queueRevision !== lastRevision || applied !== lastApplied) {
 					lastRevision = state.queueRevision;
@@ -717,9 +790,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					lastArt = art;
 					label.style.backgroundImage = art ? `url("${art}")` : "";
 				}
-				const idx = Math.max(0, Math.min(bands.length - 1, state.currentIndex));
-				const r = positionToRadius(bands, idx, state.positionSecs, geo);
-				arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+				if (!dragging) {
+					const idx = Math.max(0, Math.min(bands.length - 1, state.currentIndex));
+					const r = positionToRadius(bands, idx, state.positionSecs, geo);
+					arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+				}
 				deck.classList.toggle("lifted", !state.playing);
 				if (!host.reducedMotion) spin.style.transform = `rotate(${state.timeMs / 1800 * 360 % 360}deg)`;
 			},

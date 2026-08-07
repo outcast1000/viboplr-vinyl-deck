@@ -37,6 +37,7 @@ function makeHost(over: Partial<PluginVisualizerHost> = {}) {
   const skinHandlers: (() => void)[] = [];
   const seek = vi.fn();
   const playQueueIndex = vi.fn();
+  const setPlaying = vi.fn();
   const token = vi.fn(() => "#6ea8ff");
 
   const host: PluginVisualizerHost = {
@@ -61,10 +62,10 @@ function makeHost(over: Partial<PluginVisualizerHost> = {}) {
         if (i >= 0) skinHandlers.splice(i, 1);
       };
     },
-    actions: { seek, playQueueIndex },
+    actions: { seek, playQueueIndex, setPlaying },
     ...over,
   };
-  return { host, root, seek, playQueueIndex, token, resizeHandlers, skinHandlers };
+  return { host, root, seek, playQueueIndex, setPlaying, token, resizeHandlers, skinHandlers };
 }
 
 function makeState(over: Partial<PluginVisualizerState> = {}): PluginVisualizerState {
@@ -129,13 +130,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Press on the groove `secs` into track `index`, then release. */
+/**
+ * Drag the headshell onto the groove `secs` into track `index`, then release.
+ *
+ * The head is the only handle — the record is inert — and a press alone resolves
+ * nothing, so this has to be a real drag: the move is what picks the groove.
+ */
 function cue(root: ShadowRoot, index: number, secs: number) {
-  const scrub = root.querySelector(".scrub") as HTMLElement;
+  const head = root.querySelector(".head") as HTMLElement;
   const r = positionToRadius(bands, index, secs, geo);
-  const opt = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - r, clientY: geo.cy };
-  scrub.dispatchEvent(new MouseEvent("pointerdown", opt) as unknown as PointerEvent);
-  scrub.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+  const at = (x: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: geo.cy });
+  head.dispatchEvent(new MouseEvent("pointerdown", at(geo.cx - geo.rLeadIn)) as unknown as PointerEvent);
+  head.dispatchEvent(new MouseEvent("pointermove", at(geo.cx - r)) as unknown as PointerEvent);
+  head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
 }
 
 describe("vinyl deck visualizer", () => {
@@ -235,6 +242,132 @@ describe("vinyl deck visualizer", () => {
     expect(spin.style.transform).not.toBe(a); // still turning while paused
   });
 
+  it("asks for the opposite of the state it was last shown when the lever is clicked", () => {
+    // The lever states what it wants rather than toggling, because the host
+    // compares against live state — see PluginVisualizerActions.setPlaying.
+    const { host, root, setPlaying } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    const lever = root.querySelector(".lever") as HTMLElement;
+
+    v.frame(makeState({ playing: true }));
+    lever.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(setPlaying).toHaveBeenLastCalledWith(false);
+
+    v.frame(makeState({ playing: false }));
+    lever.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(setPlaying).toHaveBeenLastCalledWith(true);
+  });
+
+  it("knows the transport state even with an empty queue, which bails early", () => {
+    // frame() returns before most of its work when there are no bands; the
+    // lever still has to know what to ask for.
+    const { host, root, setPlaying } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ playing: true, queue: [], currentIndex: -1, queueRevision: 9 }));
+    (root.querySelector(".lever") as HTMLElement).dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    expect(setPlaying).toHaveBeenLastCalledWith(false);
+  });
+
+  it("degrades to a decorative lever on a host without setPlaying", () => {
+    // An older host predates the action; a click must no-op, not throw.
+    const { host, root } = makeHost();
+    (host.actions as { setPlaying?: unknown }).setPlaying = undefined;
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ playing: true }));
+    expect(() =>
+      (root.querySelector(".lever") as HTMLElement).dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("puts the cue lever in the corner clear of the disc, and mirrors it with the arm", () => {
+    // The corner is the only room on a square holding an inscribed circle, and
+    // the crop cuts everything past ~0.68·size — an unmirrored lever would be
+    // off-screen there, on the far side from the arm it operates.
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState());
+    const lever = root.querySelector(".lever") as HTMLElement;
+    const left = parseFloat(lever.style.left);
+    const top = parseFloat(lever.style.top);
+
+    // Bottom-right quadrant, and outside the record.
+    expect(left).toBeGreaterThan(geo.cx);
+    expect(top).toBeGreaterThan(geo.cy);
+    expect(Math.hypot(left - geo.cx, top - geo.cy)).toBeGreaterThan(geo.rEdge);
+
+    const mirrored = makeHost();
+    const v2 = createVinylDeckVisualizer(opts({ composition: "left-two-thirds" }));
+    v2.mount(mirrored.host);
+    v2.frame(makeState());
+    const lever2 = mirrored.root.querySelector(".lever") as HTMLElement;
+    // Same corner, other side — following the arm across the mirror.
+    expect(parseFloat(lever2.style.left)).toBeLessThan(geo.cx);
+    expect(parseFloat(lever2.style.top)).toBeCloseTo(top, 5);
+  });
+
+  it("has no groove-scrub layer — the record is not a control", () => {
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    expect(root.querySelector(".scrub")).toBeNull();
+  });
+
+  it("ignores a drag on the disc itself, however deliberate", () => {
+    // The whole surface used to cue. Dragging across the platter, the label and
+    // the painted grooves must now do nothing at all — the head is the handle.
+    const { host, root, seek, playQueueIndex } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ currentIndex: 0 }));
+
+    const r = positionToRadius(bands, 2, 5, geo);
+    const press = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - r, clientY: geo.cy };
+
+    for (const sel of [".platter", ".label", "canvas", ".gaps", ".body"]) {
+      const part = root.querySelector(sel) as HTMLElement;
+      part.dispatchEvent(new MouseEvent("pointerdown", press) as unknown as PointerEvent);
+      part.dispatchEvent(new MouseEvent("pointermove", press) as unknown as PointerEvent);
+      part.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    }
+    expect(seek).not.toHaveBeenCalled();
+    expect(playQueueIndex).not.toHaveBeenCalled();
+  });
+
+  it("drags from the headshell only — the tube and counterweight are not handles", () => {
+    // The listener lives on .head. A press on the tube bubbles up through .arm,
+    // so if a handler were still bound there this would start a drag.
+    const { host, root, seek, playQueueIndex } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ currentIndex: 0 }));
+
+    const r = positionToRadius(bands, 2, 5, geo);
+    const press = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - r, clientY: geo.cy };
+
+    for (const sel of [".tube", ".counter", ".pivot"]) {
+      const part = root.querySelector(sel) as HTMLElement;
+      part.dispatchEvent(new MouseEvent("pointerdown", press) as unknown as PointerEvent);
+      part.dispatchEvent(new MouseEvent("pointermove", press) as unknown as PointerEvent);
+      part.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    }
+    expect(seek).not.toHaveBeenCalled();
+    expect(playQueueIndex).not.toHaveBeenCalled();
+
+    const head = root.querySelector(".head") as HTMLElement;
+    head.dispatchEvent(new MouseEvent("pointerdown", press) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointermove", press) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    expect(playQueueIndex).toHaveBeenCalledWith(2);
+  });
+
   it("honours reduced motion, which no CSS guard can reach in a shadow root", () => {
     const { host, root } = makeHost({ reducedMotion: true });
     const v = createVinylDeckVisualizer(opts());
@@ -267,20 +400,41 @@ describe("vinyl deck visualizer", () => {
     expect(playQueueIndex).not.toHaveBeenCalled();
   });
 
-  it("ignores a press on the label instead of jumping to track 1", () => {
+  it("does nothing on a press that never moves", () => {
+    // The press point on the headshell says nothing about a groove, so a click
+    // must not jump to wherever the arm happened to be.
     const { host, root, playQueueIndex, seek } = makeHost();
     const v = createVinylDeckVisualizer(opts());
     v.mount(host);
     v.frame(makeState());
 
-    const scrub = root.querySelector(".scrub") as HTMLElement;
-    scrub.dispatchEvent(
+    const head = root.querySelector(".head") as HTMLElement;
+    head.dispatchEvent(
       new MouseEvent("pointerdown", {
         bubbles: true, button: 0, clientX: geo.cx, clientY: geo.cy,
       }) as unknown as PointerEvent,
     );
-    scrub.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
     expect(playQueueIndex).not.toHaveBeenCalled();
+    expect(seek).not.toHaveBeenCalled();
+  });
+
+  it("clamps a drag dragged onto the label rather than dropping it", () => {
+    // Different from a press on the disc, which is inert: once you have hold of
+    // the arm every position has to resolve to some groove, or the arm would
+    // stick wherever you crossed the lead-in.
+    const { host, root, playQueueIndex, seek } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ currentIndex: 0 }));
+
+    const head = root.querySelector(".head") as HTMLElement;
+    const at = (x: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: geo.cy });
+    head.dispatchEvent(new MouseEvent("pointerdown", at(geo.cx - geo.rLeadIn)) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointermove", at(geo.cx)) as unknown as PointerEvent); // dead centre
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    // Clamped to the innermost groove — the last band, not ignored and not track 1.
+    expect(playQueueIndex).toHaveBeenCalledWith(DURATIONS.length - 1);
     expect(seek).not.toHaveBeenCalled();
   });
 
@@ -290,15 +444,43 @@ describe("vinyl deck visualizer", () => {
     v.mount(host);
     v.frame(makeState());
 
-    const scrub = root.querySelector(".scrub") as HTMLElement;
+    const head = root.querySelector(".head") as HTMLElement;
     const r = positionToRadius(bands, 2, 60, geo);
-    scrub.dispatchEvent(
-      new MouseEvent("pointerdown", {
-        bubbles: true, button: 2, clientX: geo.cx - r, clientY: geo.cy,
-      }) as unknown as PointerEvent,
-    );
-    scrub.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    const at = { bubbles: true, button: 2, pointerId: 1, clientX: geo.cx - r, clientY: geo.cy };
+    head.dispatchEvent(new MouseEvent("pointerdown", at) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointermove", at) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
     expect(playQueueIndex).not.toHaveBeenCalled();
+  });
+
+  it("follows the pointer during the drag, not only on release", () => {
+    // frame() writes the arm angle from the host's position every tick. If it
+    // isn't suppressed while dragging it overwrites the drag on the next frame
+    // and the head appears frozen until the mouse comes up.
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer(opts());
+    v.mount(host);
+    v.frame(makeState({ currentIndex: 0, positionSecs: 0 }));
+
+    const arm = root.querySelector(".arm") as HTMLElement;
+    const head = root.querySelector(".head") as HTMLElement;
+    const before = arm.style.getPropertyValue("--deg");
+
+    const inner = positionToRadius(bands, DURATIONS.length - 1, 0, geo);
+    const at = (x: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: geo.cy });
+    head.dispatchEvent(new MouseEvent("pointerdown", at(geo.cx - geo.rLeadIn)) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointermove", at(geo.cx - inner)) as unknown as PointerEvent);
+    const during = arm.style.getPropertyValue("--deg");
+    expect(during).not.toBe(before);
+
+    // A frame mid-drag must not drag it back to where the host still thinks it is.
+    v.frame(makeState({ currentIndex: 0, positionSecs: 0 }));
+    expect(arm.style.getPropertyValue("--deg")).toBe(during);
+
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    // Released: the host owns the angle again.
+    v.frame(makeState({ currentIndex: 0, positionSecs: 0 }));
+    expect(arm.style.getPropertyValue("--deg")).toBe(before);
   });
 
   it("mirrors the arm for the left-two-thirds crop", () => {

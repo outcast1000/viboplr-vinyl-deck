@@ -1,3 +1,23 @@
+## 1.0.1
+
+- **The cue lever works.** Click it to raise or lower the head — the lift was
+  already the paused state, so now the control that depicts it operates it too.
+  Reshaped into a housing, slot and knurled knob, and moved to the bottom-right
+  corner — the roomiest part of a square holding an inscribed circle, and the one
+  the arm never visits. It used to graze the record.
+- **The headshell is the only handle.** Cueing used to work from anywhere on the
+  record, and from anywhere on the arm. Now the disc is inert and the tube,
+  pivot and counterweight pass through — you cue by the head, as you would on a
+  real deck, and a stray click on the artwork can't jump the queue.
+- **The head follows your hand.** It used to stay put until you released, then
+  snap to the result; the arm now tracks the pointer for the whole drag.
+- Offers itself for the fullscreen slot, so the deck can fill the whole screen
+  rather than only the artwork's place.
+
+Requires a host with `actions.setPlaying` for the lever; on an older one the
+lever stays decorative and the rest is unchanged. The fullscreen placement is
+simply never asked for by a host that has no such slot.
+
 ## 1.0.0
 
 First release. A vinyl deck for the Now Playing view: your play queue pressed onto

@@ -19,10 +19,16 @@ Ships disabled on first install, and marked experimental.
 
 ## What it does
 
-- **Cue by dragging the tonearm, or by scrubbing the grooves.** Landing on another
-  band plays that track; landing inside the one already playing seeks within it.
-  A press on the label, dead wax or rim is ignored rather than clamped — clamping
-  would make a click on the album art silently jump to track 1.
+- **Cue by dragging the headshell.** Landing on another band plays that track;
+  landing inside the one already playing seeks within it. The arm follows your
+  hand for the whole drag and tells the app on release.
+  The headshell is the **only** handle on the deck — the record is not a control
+  and neither are the tube, pivot or counterweight. A press that never moves does
+  nothing (the grab point says nothing about a groove), and a drag taken off the
+  program area clamps to the nearest groove rather than being dropped.
+- **The cue lever operates the head.** Click it to raise or lower — the raised
+  arm is the paused state, so the lever that depicts it also drives it. Needs
+  `actions.setPlaying`; on a host without it the lever is decorative.
 - **The platter never stops.** On pause the cue lever raises the front of the arm
   off the record while the base stays put, which is what a real cue lever does.
 - **The label is the album art**, and it turns with the record.
