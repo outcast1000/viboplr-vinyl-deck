@@ -18,8 +18,6 @@ export const DECK_CSS = `
   --vinyl-body: color-mix(in srgb, var(--bg-primary) 26%, #000);
   --vinyl-body-hi: color-mix(in srgb, var(--bg-primary) 46%, #000);
   --vinyl-sheen: #fff;
-  --vinyl-platter: var(--bg-tertiary);
-  --tilt: 0deg;
   --k: 1; /* deck size / 368 reference — see repress() */
   position: absolute;
   inset: 0;
@@ -27,7 +25,12 @@ export const DECK_CSS = `
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  /* Load-bearing, and the only reason any 3D remains here: the cue lift is a
+     translateZ on the headshell (see .lifted .head), which is invisible without
+     a perspective on an ancestor and a preserve-3d chain down to it. The platter
+     itself is never rotated or scaled. */
   perspective: 620px;
+  transform-style: preserve-3d;
 }
 
 .platter {
@@ -36,10 +39,6 @@ export const DECK_CSS = `
   transform-style: preserve-3d;
   flex: 0 0 auto;
 }
-/* Tilt lives on an inner wrapper-free platter: rotateX composes with the crop's
-   scale/translate already on this element. */
-.deck { transform-style: preserve-3d; }
-.platter { rotate: x var(--tilt); }
 
 .body {
   position: absolute; inset: 0; border-radius: 50%;
@@ -101,13 +100,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   margin: calc(-5.5px * var(--k)) 0 0 calc(-5.5px * var(--k)); border-radius: 50%;
   background: var(--bg-primary); box-shadow: inset 0 1px 2px rgba(0,0,0,.9);
   pointer-events: none;
-}
-
-.gaps { position: absolute; inset: 0; pointer-events: none; }
-.gap-ring {
-  position: absolute; left: 50%; top: 50%; border-radius: 50%;
-  transform: translate(-50%, -50%);
-  border: 1px dashed color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
 /* There is no groove-scrub layer. The record is not a control: the headshell is
@@ -198,7 +190,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   position: absolute; inset: 0;
   transform-style: preserve-3d;
 }
-.mirror-arm .armwrap { transform: scaleX(-1); }
 
 /* Rotation only. This updates every frame as the needle tracks, so it gets a
    short linear transition — just enough to smooth a cue jump. */

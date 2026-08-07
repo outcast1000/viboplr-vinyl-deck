@@ -12,7 +12,7 @@ import type {
   PluginVisualizerState,
   PluginVisualizerTrack,
 } from "../types/viboplr-visualizer";
-import { createVinylDeckVisualizer, type DeckOptions } from "./visualizer";
+import { createVinylDeckVisualizer } from "./visualizer";
 import { buildGeometry, layoutBands, positionToRadius } from "./geometry";
 
 const SIZE = 368;
@@ -81,10 +81,6 @@ function makeState(over: Partial<PluginVisualizerState> = {}): PluginVisualizerS
   };
 }
 
-function opts(over: Partial<DeckOptions> = {}): DeckOptions {
-  return { composition: "full", tilt: 0, emphasiseGaps: false, ...over };
-}
-
 let arcCount = 0;
 let strokes: string[] = [];
 const origRect = Element.prototype.getBoundingClientRect;
@@ -148,7 +144,7 @@ function cue(root: ShadowRoot, index: number, secs: number) {
 describe("vinyl deck visualizer", () => {
   it("builds its DOM inside the shadow root", () => {
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     expect(root.querySelector("canvas")).toBeTruthy();
     expect(root.querySelector(".arm")).toBeTruthy();
@@ -160,7 +156,7 @@ describe("vinyl deck visualizer", () => {
     // for an ambient document would throw at mount. Proven by mounting with the
     // global shadowed.
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     const realDoc = globalThis.document;
     try {
       // @ts-expect-error deliberately simulating the sandbox
@@ -174,7 +170,7 @@ describe("vinyl deck visualizer", () => {
 
   it("presses the record once per queue change, not once per frame", () => {
     const { host } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
 
     v.frame(makeState());
@@ -188,35 +184,29 @@ describe("vinyl deck visualizer", () => {
     expect(arcCount).toBeGreaterThan(afterFirst);
   });
 
-  it("re-presses when a shared setting changes, since the host won't re-mount", () => {
-    const o = opts();
-    const { host } = makeHost();
-    const v = createVinylDeckVisualizer(o);
-    v.mount(host);
-    v.frame(makeState());
-    const before = arcCount;
+  it("takes no options, so nothing but the host can change how it draws", () => {
+    // The deck used to accept a live options object (crop, tilt, gap outline) that
+    // the plugin mutated behind its back, which meant frame() had to diff the
+    // settings as well as the queue. Constructing it with no argument is the whole
+    // contract now — and a stray argument must not resurrect a hidden knob.
+    expect(createVinylDeckVisualizer.length).toBe(0);
 
-    o.emphasiseGaps = true; // the plugin mutates the live object
-    v.frame(makeState());
-    expect(arcCount).toBeGreaterThan(before);
-  });
-
-  it("outlines one ring per inter-track gap, only when asked", () => {
-    const o = opts();
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(o);
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState());
-    expect(root.querySelectorAll(".gap-ring").length).toBe(0);
-
-    o.emphasiseGaps = true;
-    v.frame(makeState());
-    expect(root.querySelectorAll(".gap-ring").length).toBe(DURATIONS.length - 1);
+    // The DOM those options drove is gone with them.
+    expect(root.querySelector(".gaps")).toBeNull();
+    expect(root.querySelector(".gap-ring")).toBeNull();
+    expect((root.querySelector(".deck") as HTMLElement).classList.contains("mirror-arm")).toBe(false);
+    // No tilt, and no crop transform on the platter.
+    expect((root.querySelector(".deck") as HTMLElement).style.getPropertyValue("--tilt")).toBe("");
+    expect((root.querySelector(".platter") as HTMLElement).style.transform).toBe("");
   });
 
   it("tracks the tonearm inwards as position advances", () => {
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     const arm = root.querySelector(".arm") as HTMLElement;
 
@@ -228,7 +218,7 @@ describe("vinyl deck visualizer", () => {
 
   it("lifts the arm when paused and keeps the platter turning", () => {
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     const deck = root.querySelector(".deck") as HTMLElement;
     const spin = root.querySelector(".spin") as HTMLElement;
@@ -246,7 +236,7 @@ describe("vinyl deck visualizer", () => {
     // The lever states what it wants rather than toggling, because the host
     // compares against live state — see PluginVisualizerActions.setPlaying.
     const { host, root, setPlaying } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     const lever = root.querySelector(".lever") as HTMLElement;
 
@@ -263,7 +253,7 @@ describe("vinyl deck visualizer", () => {
     // frame() returns before most of its work when there are no bands; the
     // lever still has to know what to ask for.
     const { host, root, setPlaying } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ playing: true, queue: [], currentIndex: -1, queueRevision: 9 }));
     (root.querySelector(".lever") as HTMLElement).dispatchEvent(
@@ -276,7 +266,7 @@ describe("vinyl deck visualizer", () => {
     // An older host predates the action; a click must no-op, not throw.
     const { host, root } = makeHost();
     (host.actions as { setPlaying?: unknown }).setPlaying = undefined;
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ playing: true }));
     expect(() =>
@@ -286,12 +276,11 @@ describe("vinyl deck visualizer", () => {
     ).not.toThrow();
   });
 
-  it("puts the cue lever in the corner clear of the disc, and mirrors it with the arm", () => {
-    // The corner is the only room on a square holding an inscribed circle, and
-    // the crop cuts everything past ~0.68·size — an unmirrored lever would be
-    // off-screen there, on the far side from the arm it operates.
+  it("puts the cue lever in the corner clear of the disc", () => {
+    // The corner is the roomiest part of a square holding an inscribed circle,
+    // and the one the arm never visits.
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState());
     const lever = root.querySelector(".lever") as HTMLElement;
@@ -302,20 +291,14 @@ describe("vinyl deck visualizer", () => {
     expect(left).toBeGreaterThan(geo.cx);
     expect(top).toBeGreaterThan(geo.cy);
     expect(Math.hypot(left - geo.cx, top - geo.cy)).toBeGreaterThan(geo.rEdge);
-
-    const mirrored = makeHost();
-    const v2 = createVinylDeckVisualizer(opts({ composition: "left-two-thirds" }));
-    v2.mount(mirrored.host);
-    v2.frame(makeState());
-    const lever2 = mirrored.root.querySelector(".lever") as HTMLElement;
-    // Same corner, other side — following the arm across the mirror.
-    expect(parseFloat(lever2.style.left)).toBeLessThan(geo.cx);
-    expect(parseFloat(lever2.style.top)).toBeCloseTo(top, 5);
+    // Still inside the deck box, which is what `.deck { overflow: hidden }` clips.
+    expect(left).toBeLessThan(geo.size);
+    expect(top).toBeLessThan(geo.size);
   });
 
   it("has no groove-scrub layer — the record is not a control", () => {
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     expect(root.querySelector(".scrub")).toBeNull();
   });
@@ -324,14 +307,14 @@ describe("vinyl deck visualizer", () => {
     // The whole surface used to cue. Dragging across the platter, the label and
     // the painted grooves must now do nothing at all — the head is the handle.
     const { host, root, seek, playQueueIndex } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 0 }));
 
     const r = positionToRadius(bands, 2, 5, geo);
     const press = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - r, clientY: geo.cy };
 
-    for (const sel of [".platter", ".label", "canvas", ".gaps", ".body"]) {
+    for (const sel of [".platter", ".label", "canvas", ".sheen", ".body"]) {
       const part = root.querySelector(sel) as HTMLElement;
       part.dispatchEvent(new MouseEvent("pointerdown", press) as unknown as PointerEvent);
       part.dispatchEvent(new MouseEvent("pointermove", press) as unknown as PointerEvent);
@@ -345,7 +328,7 @@ describe("vinyl deck visualizer", () => {
     // The listener lives on .head. A press on the tube bubbles up through .arm,
     // so if a handler were still bound there this would start a drag.
     const { host, root, seek, playQueueIndex } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 0 }));
 
@@ -370,7 +353,7 @@ describe("vinyl deck visualizer", () => {
 
   it("honours reduced motion, which no CSS guard can reach in a shadow root", () => {
     const { host, root } = makeHost({ reducedMotion: true });
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     const spin = root.querySelector(".spin") as HTMLElement;
     v.frame(makeState({ timeMs: 500 }));
@@ -379,7 +362,7 @@ describe("vinyl deck visualizer", () => {
 
   it("plays another queue entry when cued onto a different band", () => {
     const { host, root, playQueueIndex, seek } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 0 }));
 
@@ -390,7 +373,7 @@ describe("vinyl deck visualizer", () => {
 
   it("seeks when cued inside the band already playing", () => {
     const { host, root, playQueueIndex, seek } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 4, positionSecs: 10 }));
 
@@ -404,7 +387,7 @@ describe("vinyl deck visualizer", () => {
     // The press point on the headshell says nothing about a groove, so a click
     // must not jump to wherever the arm happened to be.
     const { host, root, playQueueIndex, seek } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState());
 
@@ -424,7 +407,7 @@ describe("vinyl deck visualizer", () => {
     // the arm every position has to resolve to some groove, or the arm would
     // stick wherever you crossed the lead-in.
     const { host, root, playQueueIndex, seek } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 0 }));
 
@@ -440,7 +423,7 @@ describe("vinyl deck visualizer", () => {
 
   it("ignores non-primary buttons", () => {
     const { host, root, playQueueIndex } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState());
 
@@ -458,7 +441,7 @@ describe("vinyl deck visualizer", () => {
     // isn't suppressed while dragging it overwrites the drag on the next frame
     // and the head appears frozen until the mouse comes up.
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 0, positionSecs: 0 }));
 
@@ -483,17 +466,9 @@ describe("vinyl deck visualizer", () => {
     expect(arm.style.getPropertyValue("--deg")).toBe(before);
   });
 
-  it("mirrors the arm for the left-two-thirds crop", () => {
-    const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts({ composition: "left-two-thirds" }));
-    v.mount(host);
-    v.frame(makeState());
-    expect((root.querySelector(".deck") as HTMLElement).classList.contains("mirror-arm")).toBe(true);
-  });
-
   it("survives an empty queue and unknown durations", () => {
     const { host } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     expect(() => v.frame(makeState({ queue: [], currentIndex: -1, queueRevision: 7 }))).not.toThrow();
 
@@ -508,7 +483,7 @@ describe("vinyl deck visualizer", () => {
 
   it("survives a currentIndex past the end of the pressing", () => {
     const { host, root } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ currentIndex: 99 }));
     const deg = (root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
@@ -517,7 +492,7 @@ describe("vinyl deck visualizer", () => {
 
   it("re-presses at the new size when the slot resizes", () => {
     const { host, resizeHandlers } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState());
     const before = arcCount;
@@ -529,7 +504,7 @@ describe("vinyl deck visualizer", () => {
 
   it("releases its subscriptions on destroy", () => {
     const { host, resizeHandlers, skinHandlers } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     expect(resizeHandlers.length).toBe(1);
     expect(skinHandlers.length).toBe(1);
@@ -548,7 +523,7 @@ describe("vinyl deck visualizer", () => {
     ];
 
     const { host } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState({ queue: withPeaks, currentIndex: 0, queueRevision: 41 }));
 
@@ -571,7 +546,7 @@ describe("vinyl deck visualizer", () => {
     // The host reads the waveform cache asynchronously, so a band is drawn plain
     // first and re-pressed once its peaks land.
     const { host } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
 
     const plain: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: 120 }];
@@ -596,7 +571,7 @@ describe("vinyl deck visualizer", () => {
     // inheriting through the shadow boundary. Structural skin-safety is gone
     // from the contract, but this deck keeps it by construction.
     const { host, token } = makeHost();
-    const v = createVinylDeckVisualizer(opts());
+    const v = createVinylDeckVisualizer();
     v.mount(host);
     v.frame(makeState());
     expect(token).not.toHaveBeenCalled();

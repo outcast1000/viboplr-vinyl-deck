@@ -16,10 +16,8 @@ import type {
 } from "../types/viboplr-visualizer";
 import {
   type Band,
-  type VinylComposition,
   armAngleDeg,
   buildArmMount,
-  buildCrop,
   buildGeometry,
   clampToProgram,
   layoutBands,
@@ -30,19 +28,17 @@ import { paintVinylSurface } from "./surface";
 import { DECK_CSS } from "./style";
 
 /**
- * Presentation-only options, shared **by reference** with the plugin.
+ * The deck has no options.
  *
- * The host re-mounts a visualizer only when the slot's *selection* changes, so a
- * settings change can't arrive as a new mount. Handing over a live object the
- * plugin mutates is how a running deck picks up a new tilt on its next frame.
+ * It used to carry three — a crop, a platter tilt and a gap outline — and a
+ * settings panel to drive them. They are gone on purpose: every one of them was
+ * a way to make the deck look like something other than a record, two of them
+ * cost accuracy (the tilt makes cueing read the radius off a projection, the
+ * crop mirrors the arm), and none answered a question a listener actually has.
+ * A real deck has a cue lever and a tonearm, so this one has a cue lever and a
+ * tonearm. Nothing to configure means nothing to get wrong.
  */
-export interface DeckOptions {
-  composition: VinylComposition;
-  tilt: number;
-  emphasiseGaps: boolean;
-}
-
-export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualizer {
+export function createVinylDeckVisualizer(): PluginVisualizer {
   let host: PluginVisualizerHost;
   let root: ShadowRoot;
   let deck: HTMLElement;
@@ -51,7 +47,6 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
   let canvas: HTMLCanvasElement;
   let label: HTMLElement;
   let arm: HTMLElement;
-  let gapLayer: HTMLElement;
   let lever: HTMLElement;
 
   /** Last `playing` seen in frame(). The lever states the value it wants rather
@@ -80,7 +75,6 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
 
   let lastRevision = -1;
   let lastArt: string | null = null;
-  let lastApplied = "";
   let currentIndex = -1;
   const unsubs: (() => void)[] = [];
 
@@ -92,15 +86,10 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
     mountPoint = buildArmMount(geo);
     bands = layoutBands(durations, geo);
 
-    const crop = buildCrop(options.composition, geo);
-    // The crop trades the disc's redundant angular symmetry for magnification;
-    // centre whatever window it produces inside the slot we were given.
+    // The disc is inscribed in the largest square the slot allows and centred by
+    // the deck's flex box. It is never cropped or scaled: a record is what it is.
     platter.style.width = `${geo.size}px`;
     platter.style.height = `${geo.size}px`;
-    platter.style.transform =
-      crop.zoom === 1
-        ? ""
-        : `scale(${crop.zoom}) translate(${crop.left / crop.zoom}px, ${crop.top / crop.zoom}px)`;
 
     canvas.style.width = `${geo.size}px`;
     canvas.style.height = `${geo.size}px`;
@@ -133,35 +122,13 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
     // any normal size — but the clamp costs nothing and keeps a very small slot
     // (or a future geometry tweak) from pushing the knob off the edge.
     const inset = 6 * k;
-    const leverX = Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset);
-    const leverY = Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset);
-    // Follow the arm across the mirror. The cropped composition flips .armwrap
-    // so the playhead survives, but the lever isn't inside it — left unmirrored
-    // it would sit on the far side from the arm it operates, and in fact off the
-    // visible area entirely (the crop cuts everything past ~0.68·size).
-    lever.style.left = `${crop.mirrorArm ? geo.size - leverX - leverW : leverX}px`;
-    lever.style.top = `${leverY}px`;
-    // Mirror the arm for a left-hand crop so the playhead survives it.
-    deck.classList.toggle("mirror-arm", crop.mirrorArm);
+    lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
+    lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
 
     // Each band is grooved from its OWN track's waveform, where the host had one
     // cached. Absent peaks fall back to an even groove rather than a blank band,
     // so a queue of streaming tracks still looks like a record.
     paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
-    renderGapRings();
-  }
-
-  function renderGapRings() {
-    gapLayer.textContent = "";
-    if (!options.emphasiseGaps) return;
-    for (let i = 0; i < bands.length - 1; i++) {
-      const d = (bands[i].inner - (bands[i].inner - bands[i + 1].outer) / 2) * 2;
-      const ring = doc.createElement("div");
-      ring.className = "gap-ring";
-      ring.style.width = `${d}px`;
-      ring.style.height = `${d}px`;
-      gapLayer.append(ring);
-    }
   }
 
   /**
@@ -174,8 +141,8 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
    * computed radius wrong by a varying amount, which silently broke both cue
    * gestures while the drawing still looked perfect.
    *
-   * The platter carries the crop's scale, so one factor is still right for every
-   * composition.
+   * The unit factor keeps this honest if the platter is ever laid out at a size
+   * other than the geometry it was built for.
    */
   function radiusAt(clientX: number, clientY: number): number {
     const rect = platter.getBoundingClientRect();
@@ -276,14 +243,12 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
         "</div>" +
         '<div class="sheen"></div>' +
         '<div class="iris"></div>' +
-        '<div class="gaps"></div>' +
         '<div class="hole"></div>' +
         '<div class="lever"><i></i></div>' +
-        // Four nested wrappers, one job each, because they need different
-        // transforms AND different transitions: armwrap = mirror for a
-        // left-hand crop, armrise = screen-space lift, arm = tracking
-        // rotation (every frame), armlift = depth. Collapsing any two makes
-        // the slow cue easing smear the per-frame tracking.
+        // Nested wrappers, one job each, because they need different transforms
+        // AND different transitions: arm = tracking rotation (every frame),
+        // armlift = depth. Collapsing them makes the slow cue easing smear the
+        // per-frame tracking.
         '<div class="armwrap"><div class="armrise"><div class="arm"><div class="armlift">' +
         '<div class="counter"></div><div class="pivot"></div>' +
         '<div class="tube"></div><div class="shadow"></div><div class="head"></div>' +
@@ -296,7 +261,6 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
       canvas = deck.querySelector("canvas") as HTMLCanvasElement;
       label = deck.querySelector(".label") as HTMLElement;
       arm = deck.querySelector(".arm") as HTMLElement;
-      gapLayer = deck.querySelector(".gaps") as HTMLElement;
       lever = deck.querySelector(".lever") as HTMLElement;
 
       // The HEADSHELL is the only handle on the deck. Not the tube or the
@@ -331,15 +295,12 @@ export function createVinylDeckVisualizer(options: DeckOptions): PluginVisualize
       // Before the empty-queue bail below: the lever reads this to decide what
       // to ask for, and a stale value would make its first click a no-op.
       playing = state.playing;
-      // Settings are shared by reference, so fold them into the same cheap
-      // "does the expensive work need redoing?" check as the queue.
-      const applied = `${options.composition}|${options.emphasiseGaps}`;
-      if (state.queueRevision !== lastRevision || applied !== lastApplied) {
+      // The pressing is the only expensive work, and `queueRevision` is the only
+      // thing that can invalidate it (a resize forces it by clearing this).
+      if (state.queueRevision !== lastRevision) {
         lastRevision = state.queueRevision;
-        lastApplied = applied;
         repress(state.queue);
       }
-      deck.style.setProperty("--tilt", `${options.tilt}deg`);
       if (bands.length === 0) return;
 
       currentIndex = state.currentIndex;

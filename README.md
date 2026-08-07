@@ -7,7 +7,8 @@ the smooth black land between bands standing in for the inter-track gap — so t
 shape of a playlist is legible at a glance: a side of two-minute punk songs is
 visibly striped, a side of krautrock is two fat bands.
 
-Fills the host's **`nowplaying`** visualizer slot, replacing the static artwork.
+Fills the host's **`nowplaying`** slot, replacing the static artwork, and the
+**`fullscreen`** one.
 
 ## Install
 
@@ -16,6 +17,9 @@ pick it in **Settings → Playback → "Now Playing visualizer"** (or right-clic
 Now Playing artwork).
 
 Ships disabled on first install, and marked experimental.
+
+**It has no settings.** Nothing to configure, and no settings panel — see
+[Why there are no options](#why-there-are-no-options).
 
 ## What it does
 
@@ -32,9 +36,33 @@ Ships disabled on first install, and marked experimental.
 - **The platter never stops.** On pause the cue lever raises the front of the arm
   off the record while the base stays put, which is what a real cue lever does.
 - **The label is the album art**, and it turns with the record.
-- Full disc, or a magnified **left-two-thirds** crop. A record is radially
-  symmetric — the angular dimension carries no playlist information — so the right
-  rim duplicates the left, and cropping it buys magnification instead.
+- **The grooves are cut from each track's own waveform**, where the host already
+  had one cached. Loud passages read as brighter, denser grooves. A track without
+  a cached waveform gets an even groove rather than a blank band.
+
+## Why there are no options
+
+The deck shipped three, and a settings panel to drive them: a magnified
+left-two-thirds crop, four platter tilts, and a dashed outline over the
+inter-track gaps. All three are gone, along with the panel, the stored settings
+and the live options object that was threaded into every mounted instance so a
+running deck could pick up a change mid-frame.
+
+They went because none of them answered a question a listener actually has, and
+two of them made the deck *less* of a record:
+
+- **The tilt** put the disc in perspective, so cueing had to read the radius off
+  the on-screen projection rather than the geometry — the one thing on the deck
+  that has to be exact.
+- **The crop** mirrored the whole arm assembly to keep the playhead in frame,
+  which meant the tonearm sat on the wrong side of a turntable, and the cue lever
+  had to be mirrored after it to avoid landing off-screen.
+- **The gap outline** drew in the accent colour over a surface whose whole design
+  is that it reads by its glint.
+
+A real deck has a tonearm and a cue lever, so this one has a tonearm and a cue
+lever. Nothing to configure is nothing to get wrong — and `frame()` no longer
+diffs a settings string on every tick just in case.
 
 ## Geometry
 
@@ -75,7 +103,7 @@ streaming tracks presses even bands rather than collapsing to nothing.
 ```bash
 npm install
 npm run verify      # typecheck + test + build
-npm test            # 51 tests
+npm test            # 56 tests
 npm run build       # regenerates index.js
 npm run package     # build + test + vinyl-deck.zip + update.json
 ```
@@ -94,10 +122,16 @@ npm run sync-types -- /path/to/viboplr
 ```
 
 Copying rather than hand-patching is deliberate: a hand-edited copy drifts
-silently and nothing fails until a user's deck misbehaves. `types/viboplr-host.d.ts`
-is a hand-written *subset* of the plugin API — only the five calls this plugin
-makes, plus the view-node kinds it emits. Keep those node types: checking them is
-what caught three malformed nodes an earlier hand-written version shipped silently.
+silently and nothing fails until a user's deck misbehaves.
+
+`types/viboplr-host.d.ts` is a hand-written *subset* of the plugin API, and with
+the settings panel gone it is down to the single call this plugin makes:
+`api.visualizers.onMount`. It used to also carry narrowed `select` / `toggle` /
+`text` / `section` view-node types (type-checking those caught three malformed
+nodes an earlier hand-written JS version shipped silently) plus `log` and
+`storage`. Add a member back when the plugin starts making the call — don't
+vendor one speculatively, because an unused vendored type drifts from the host
+with nothing to catch it.
 
 ### Things worth knowing before changing the code
 

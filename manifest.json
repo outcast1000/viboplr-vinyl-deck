@@ -18,11 +18,6 @@
           "fullscreen"
         ]
       }
-    ],
-    "settingsPanel": {
-      "id": "vinyl-deck-settings",
-      "label": "Vinyl Deck",
-      "order": 60
-    }
+    ]
   }
 }

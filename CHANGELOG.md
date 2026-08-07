@@ -1,5 +1,13 @@
 ## 1.0.1
 
+- **No settings.** The crop, the four platter tilts and the gap outline are gone,
+  and so is the settings panel — the deck now has nothing to configure. None of
+  the three answered a question a listener has, and two of them made it less of a
+  record: the tilt forced cueing to read the radius off a perspective projection
+  instead of the geometry, and the crop mirrored the whole arm assembly so the
+  tonearm sat on the wrong side of the turntable. A real deck has a tonearm and a
+  cue lever, so this one has a tonearm and a cue lever. Anything you had set is
+  simply forgotten; the deck draws what "flat, full disc, no outlines" always did.
 - **The cue lever works.** Click it to raise or lower the head — the lift was
   already the paused state, so now the control that depicts it operates it too.
   Reshaped into a housing, slot and knurled knob, and moved to the bottom-right

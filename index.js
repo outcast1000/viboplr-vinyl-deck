@@ -173,52 +173,6 @@ var __viboplrPlugin = (function(exports) {
 		const alpha = Math.acos(Math.max(-1, Math.min(1, cos)));
 		return (Math.atan2(geo.cy - mount.py, geo.cx - mount.px) - alpha) * 180 / Math.PI;
 	}
-	/**
-	* Crop windows, in units of the disc radius relative to its centre.
-	*
-	* A record is radially symmetric: the angular dimension carries no playlist
-	* information, only rotation and the glint. One radial slice already holds
-	* every band and every gap, so `left-two-thirds` drops the mirror-image right
-	* rim and spends the pixels on magnification instead.
-	*/
-	var COMPOSITIONS = {
-		full: {
-			x0: -1.05,
-			x1: 1.05,
-			y0: -1.05,
-			y1: 1.05,
-			zoom: 1,
-			mirrorArm: false
-		},
-		"left-two-thirds": {
-			x0: -1.06,
-			x1: .36,
-			y0: -.76,
-			y1: .76,
-			zoom: 1.3,
-			mirrorArm: true
-		}
-	};
-	/**
-	* Size the viewport *from* the crop region rather than hardcoding pixels, so a
-	* composition stays correct when the geometry or deck size changes.
-	*/
-	function buildCrop(composition, geo) {
-		const c = COMPOSITIONS[composition] ?? COMPOSITIONS.full;
-		const R = geo.rEdge;
-		const sx0 = geo.cx + c.x0 * R;
-		const sx1 = geo.cx + c.x1 * R;
-		const sy0 = geo.cy + c.y0 * R;
-		const sy1 = geo.cy + c.y1 * R;
-		return {
-			width: Math.round((sx1 - sx0) * c.zoom),
-			height: Math.round((sy1 - sy0) * c.zoom),
-			left: -sx0 * c.zoom,
-			top: -sy0 * c.zoom,
-			zoom: c.zoom,
-			mirrorArm: c.mirrorArm
-		};
-	}
 	//#endregion
 	//#region src/surface.ts
 	/** Base groove brightness. */
@@ -298,8 +252,6 @@ var __viboplrPlugin = (function(exports) {
   --vinyl-body: color-mix(in srgb, var(--bg-primary) 26%, #000);
   --vinyl-body-hi: color-mix(in srgb, var(--bg-primary) 46%, #000);
   --vinyl-sheen: #fff;
-  --vinyl-platter: var(--bg-tertiary);
-  --tilt: 0deg;
   --k: 1; /* deck size / 368 reference — see repress() */
   position: absolute;
   inset: 0;
@@ -307,7 +259,12 @@ var __viboplrPlugin = (function(exports) {
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  /* Load-bearing, and the only reason any 3D remains here: the cue lift is a
+     translateZ on the headshell (see .lifted .head), which is invisible without
+     a perspective on an ancestor and a preserve-3d chain down to it. The platter
+     itself is never rotated or scaled. */
   perspective: 620px;
+  transform-style: preserve-3d;
 }
 
 .platter {
@@ -316,10 +273,6 @@ var __viboplrPlugin = (function(exports) {
   transform-style: preserve-3d;
   flex: 0 0 auto;
 }
-/* Tilt lives on an inner wrapper-free platter: rotateX composes with the crop's
-   scale/translate already on this element. */
-.deck { transform-style: preserve-3d; }
-.platter { rotate: x var(--tilt); }
 
 .body {
   position: absolute; inset: 0; border-radius: 50%;
@@ -381,13 +334,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   margin: calc(-5.5px * var(--k)) 0 0 calc(-5.5px * var(--k)); border-radius: 50%;
   background: var(--bg-primary); box-shadow: inset 0 1px 2px rgba(0,0,0,.9);
   pointer-events: none;
-}
-
-.gaps { position: absolute; inset: 0; pointer-events: none; }
-.gap-ring {
-  position: absolute; left: 50%; top: 50%; border-radius: 50%;
-  transform: translate(-50%, -50%);
-  border: 1px dashed color-mix(in srgb, var(--accent) 72%, transparent);
 }
 
 /* There is no groove-scrub layer. The record is not a control: the headshell is
@@ -478,7 +424,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   position: absolute; inset: 0;
   transform-style: preserve-3d;
 }
-.mirror-arm .armwrap { transform: scaleX(-1); }
 
 /* Rotation only. This updates every frame as the needle tracks, so it gets a
    short linear transition — just enough to smooth a cue jump. */
@@ -599,7 +544,18 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 `;
 	//#endregion
 	//#region src/visualizer.ts
-	function createVinylDeckVisualizer(options) {
+	/**
+	* The deck has no options.
+	*
+	* It used to carry three — a crop, a platter tilt and a gap outline — and a
+	* settings panel to drive them. They are gone on purpose: every one of them was
+	* a way to make the deck look like something other than a record, two of them
+	* cost accuracy (the tilt makes cueing read the radius off a projection, the
+	* crop mirrors the arm), and none answered a question a listener actually has.
+	* A real deck has a cue lever and a tonearm, so this one has a cue lever and a
+	* tonearm. Nothing to configure means nothing to get wrong.
+	*/
+	function createVinylDeckVisualizer() {
 		let host;
 		let root;
 		let deck;
@@ -608,7 +564,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let canvas;
 		let label;
 		let arm;
-		let gapLayer;
 		let lever;
 		/** Last `playing` seen in frame(). The lever states the value it wants rather
 		*  than toggling, per the contract, so it has to know the current one. */
@@ -635,7 +590,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		};
 		let lastRevision = -1;
 		let lastArt = null;
-		let lastApplied = "";
 		let currentIndex = -1;
 		const unsubs = [];
 		/** Lay out and repaint. Called on a queue or size change — never per frame. */
@@ -644,10 +598,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			geo = buildGeometry(Math.max(40, Math.min(size.width, size.height)));
 			mountPoint = buildArmMount(geo);
 			bands = layoutBands(durations, geo);
-			const crop = buildCrop(options.composition, geo);
 			platter.style.width = `${geo.size}px`;
 			platter.style.height = `${geo.size}px`;
-			platter.style.transform = crop.zoom === 1 ? "" : `scale(${crop.zoom}) translate(${crop.left / crop.zoom}px, ${crop.top / crop.zoom}px)`;
 			canvas.style.width = `${geo.size}px`;
 			canvas.style.height = `${geo.size}px`;
 			label.style.width = `${geo.rLabel * 2}px`;
@@ -661,25 +613,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const leverH = 22 * k;
 			const diagonal = geo.rEdge * 1.2 * Math.SQRT1_2;
 			const inset = 6 * k;
-			const leverX = Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset);
-			const leverY = Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset);
-			lever.style.left = `${crop.mirrorArm ? geo.size - leverX - leverW : leverX}px`;
-			lever.style.top = `${leverY}px`;
-			deck.classList.toggle("mirror-arm", crop.mirrorArm);
+			lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
+			lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
 			paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
-			renderGapRings();
-		}
-		function renderGapRings() {
-			gapLayer.textContent = "";
-			if (!options.emphasiseGaps) return;
-			for (let i = 0; i < bands.length - 1; i++) {
-				const d = (bands[i].inner - (bands[i].inner - bands[i + 1].outer) / 2) * 2;
-				const ring = doc.createElement("div");
-				ring.className = "gap-ring";
-				ring.style.width = `${d}px`;
-				ring.style.height = `${d}px`;
-				gapLayer.append(ring);
-			}
 		}
 		/**
 		* Screen point → groove radius.
@@ -691,8 +627,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* computed radius wrong by a varying amount, which silently broke both cue
 		* gestures while the drawing still looked perfect.
 		*
-		* The platter carries the crop's scale, so one factor is still right for every
-		* composition.
+		* The unit factor keeps this honest if the platter is ever laid out at a size
+		* other than the geometry it was built for.
 		*/
 		function radiusAt(clientX, clientY) {
 			const rect = platter.getBoundingClientRect();
@@ -754,14 +690,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				root.append(style);
 				deck = doc.createElement("div");
 				deck.className = "deck lifted";
-				deck.innerHTML = "<div class=\"platter\"><div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"gaps\"></div><div class=\"hole\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div><div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
+				deck.innerHTML = "<div class=\"platter\"><div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div><div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
 				root.append(deck);
 				platter = deck.querySelector(".platter");
 				spin = deck.querySelector(".spin");
 				canvas = deck.querySelector("canvas");
 				label = deck.querySelector(".label");
 				arm = deck.querySelector(".arm");
-				gapLayer = deck.querySelector(".gaps");
 				lever = deck.querySelector(".lever");
 				deck.querySelector(".head").addEventListener("pointerdown", onDown);
 				lever.addEventListener("click", () => {
@@ -776,13 +711,10 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			},
 			frame(state) {
 				playing = state.playing;
-				const applied = `${options.composition}|${options.emphasiseGaps}`;
-				if (state.queueRevision !== lastRevision || applied !== lastApplied) {
+				if (state.queueRevision !== lastRevision) {
 					lastRevision = state.queueRevision;
-					lastApplied = applied;
 					repress(state.queue);
 				}
-				deck.style.setProperty("--tilt", `${options.tilt}deg`);
 				if (bands.length === 0) return;
 				currentIndex = state.currentIndex;
 				const art = state.queue[state.currentIndex]?.artUrl ?? null;
@@ -808,105 +740,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	}
 	//#endregion
 	//#region src/index.ts
-	var STORE_KEY = "settings";
-	var DEFAULTS = {
-		composition: "full",
-		tilt: 0,
-		emphasiseGaps: false
-	};
-	var TILTS = [
-		0,
-		16,
-		28,
-		42
-	];
-	/**
-	* One live options object, shared by reference with every mounted visualizer.
-	*
-	* The host re-mounts only when the slot's selection changes, so a settings
-	* change would otherwise never reach a running deck. Mutating this in place lets
-	* it pick the change up on its next frame.
-	*/
-	var options = { ...DEFAULTS };
 	function activate(api) {
-		function save() {
-			api.storage.set(STORE_KEY, options).catch((e) => {
-				api.log("error", `Failed to save settings: ${e}`, "vinyl-deck");
-			});
-		}
-		function renderSettings() {
-			api.ui.setViewData("vinyl-deck-settings", {
-				type: "section",
-				title: "Vinyl Deck",
-				children: [
-					{
-						type: "text",
-						content: "Right-click the Now Playing artwork to put the deck in that slot.",
-						className: "settings-hint"
-					},
-					{
-						type: "select",
-						label: "Composition",
-						description: "A record is radially symmetric, so the right-hand rim duplicates the left. Cropping it spends those pixels on magnification instead.",
-						action: "set-composition",
-						value: options.composition,
-						options: [{
-							value: "full",
-							label: "Full disc"
-						}, {
-							value: "left-two-thirds",
-							label: "Left two-thirds (magnified)"
-						}]
-					},
-					{
-						type: "select",
-						label: "Platter tilt",
-						description: "Cueing is exact when flat; while tilted the radius is read from the on-screen projection.",
-						action: "set-tilt",
-						value: String(options.tilt),
-						options: TILTS.map((t) => ({
-							value: String(t),
-							label: t === 0 ? "Flat" : `${t}°`
-						}))
-					},
-					{
-						type: "toggle",
-						label: "Outline the track gaps",
-						description: "The land between tracks is smooth black, read by its glint. Outline it when you want to read the structure deliberately.",
-						action: "set-gaps",
-						checked: options.emphasiseGaps
-					}
-				]
-			});
-		}
-		api.ui.onAction("set-composition", (v) => {
-			const raw = typeof v === "string" ? v : v?.value;
-			if (raw === "full" || raw === "left-two-thirds") {
-				options.composition = raw;
-				save();
-				renderSettings();
-			}
-		});
-		api.ui.onAction("set-tilt", (v) => {
-			const raw = typeof v === "string" ? v : v?.value;
-			const n = Number.parseInt(String(raw), 10);
-			options.tilt = Number.isNaN(n) ? 0 : n;
-			save();
-			renderSettings();
-		});
-		api.ui.onAction("set-gaps", (v) => {
-			options.emphasiseGaps = typeof v === "boolean" ? v : !options.emphasiseGaps;
-			save();
-			renderSettings();
-		});
-		api.visualizers.onMount("deck", () => createVinylDeckVisualizer(options));
-		api.storage.get(STORE_KEY).then((saved) => {
-			if (saved && typeof saved === "object") Object.assign(options, saved);
-			renderSettings();
-		}).catch((e) => {
-			api.log("error", `Failed to load settings: ${e}`, "vinyl-deck");
-			renderSettings();
-		});
+		api.visualizers.onMount("deck", () => createVinylDeckVisualizer());
 	}
 	function deactivate() {}
 	//#endregion

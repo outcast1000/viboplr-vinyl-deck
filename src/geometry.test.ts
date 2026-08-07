@@ -10,7 +10,6 @@ import {
   clampToProgram,
   buildArmMount,
   armAngleDeg,
-  buildCrop,
 } from "./geometry";
 
 const SIZE = 368;
@@ -258,38 +257,5 @@ describe("armAngleDeg", () => {
   it("stays finite for an unreachable radius instead of returning NaN", () => {
     expect(Number.isFinite(armAngleDeg(0, geo, mount))).toBe(true);
     expect(Number.isFinite(armAngleDeg(1e6, geo, mount))).toBe(true);
-  });
-});
-
-describe("buildCrop", () => {
-  it("shows the whole disc for the full composition", () => {
-    const crop = buildCrop("full", geo);
-    expect(crop.zoom).toBe(1);
-    expect(crop.mirrorArm).toBe(false);
-    expect(crop.width).toBeGreaterThanOrEqual(Math.round(geo.rEdge * 2));
-  });
-
-  it("drops the redundant right rim and magnifies for left-two-thirds", () => {
-    const full = buildCrop("full", geo);
-    const left = buildCrop("left-two-thirds", geo);
-    expect(left.zoom).toBeGreaterThan(1);
-    expect(left.mirrorArm).toBe(true);
-    // narrower slice of the disc than the full view, despite being magnified
-    expect(left.width / left.zoom).toBeLessThan(full.width / full.zoom);
-    // the label is radially unique, not a duplicate, so it stays in frame
-    expect(geo.cx + 0.36 * geo.rEdge).toBeGreaterThan(geo.cx + geo.rLabel * 0.9);
-  });
-
-  it("scales the viewport with the deck size", () => {
-    const small = buildCrop("left-two-thirds", buildGeometry(200));
-    const big = buildCrop("left-two-thirds", buildGeometry(600));
-    expect(big.width).toBeGreaterThan(small.width);
-    expect(big.width / small.width).toBeCloseTo(3, 1);
-  });
-
-  it("falls back to the full disc for an unknown composition", () => {
-    // plugins are third-party: an unrecognised value must not blank the deck
-    const crop = buildCrop("nonsense" as never, geo);
-    expect(crop).toEqual(buildCrop("full", geo));
   });
 });
