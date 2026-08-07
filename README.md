@@ -10,6 +10,9 @@ visibly striped, a side of krautrock is two fat bands.
 Fills the host's **`nowplaying`** slot, replacing the static artwork, and the
 **`fullscreen`** one.
 
+Comes as **two decks**: a bare record on black, or a silver direct-drive console
+with a plinth, an S-shaped arm and a working START/STOP.
+
 ## Install
 
 From the app: **Extensions → browse the gallery → Vinyl Deck**. Then enable it and
@@ -39,6 +42,101 @@ Ships disabled on first install, and marked experimental.
 - **The grooves are cut from each track's own waveform**, where the host already
   had one cached. Loud passages read as brighter, denser grooves. A track without
   a cached waveform gets an even groove rather than a blank band.
+
+## The two decks
+
+| | |
+|---|---|
+| **Vinyl Deck** | The record and the arm, and nothing that is neither. |
+| **Vinyl Deck · SL-1200** | A silver direct-drive console after an SL-1200 MK7 from above: brushed plinth, platter left of centre with its stroboscope dots showing around the record, S-shaped arm on a gimbal with a counterweight, pitch fader, 45 adaptor well, a **START/STOP that works** and **33/45 buttons that really change the speed**. |
+
+### START/STOP and the cue lever are different mechanisms
+
+They both stop the sound, and on a real deck they look nothing alike:
+
+- **START/STOP** cuts the **motor**. The platter brakes to a halt — fast, which is
+  the SL-1200's party trick — and the needle stays in the groove. The strobe dots
+  coast to a stop with it, because they're painted on the platter.
+- **The cue lever** lifts the **arm**. The platter keeps turning.
+
+The host has one `playing` flag and can't say which was used, so the deck
+remembers that one bit itself. It's self-correcting: any frame reporting playback
+clears it, because sound means the platter is turning however it was started. A
+pause from anywhere else — the spacebar, the now-playing bar, a track ending — is
+treated as the cue lever, since nothing outside the deck stops a real motor.
+
+### The speed buttons
+
+They set the playback rate, and **pitch goes up with it** — a turntable resamples
+rather than time-stretches, so 45 on a 33 pressing is 1.35× and about five
+semitones higher. Picking 45 doesn't hurry the music, it misplays the record.
+That's the point; a pitch-corrected "45" would be a speed-reader, not a deck.
+
+Three details follow from having the rate in the contract at all:
+
+- **The lit button comes from the host's rate, not from its own clicks.** Speed
+  is also settable in Settings → Playback, and a button that tracked only its own
+  presses would drift out of step with what you're hearing.
+- **The strobe dots do what real ones do.** They hold still at 33 and crawl off
+  it — the illusion a mains-frequency lamp produces on a real platter. It is the
+  honest readout that the deck is set wrong.
+- **The platter accelerates into the new speed** rather than jumping, because the
+  angle is integrated per frame instead of derived from the clock.
+
+Both buttons lit is 78, exactly how the real deck shows it.
+
+**The pitch fader is a trim on top of the speed button** — ±8%, the SL-1200's
+default range, with a centre detent and a live readout. It bends the record
+continuously while you drag, because a fader that only applied on release would be
+a slider pretending to be a fader. Minus at the top and plus at the bottom, the
+Technics way round, and marked so you don't have to guess. **RESET** is the quartz
+lock: back to exactly the selected speed, keeping your 33/45 choice, and it lights
+whenever the deck is off-speed so there's always a visible way back. Changing
+speed keeps the fader where it is — the buttons pick the speed, the fader trims
+it.
+
+`src/pitch.ts` holds the maths, and the interesting part isn't the dragging: the
+deck derives **both** which button is lit **and** where the knob sits from the
+host's single `rate`, keeping no memory of which button was pressed. That works
+because the speeds' ±8% windows don't overlap (33 tops out at 1.08, 45 starts at
+1.242), so a rate maps back to exactly one speed-and-trim pair. At the real deck's
+*other* range, ±16%, they'd touch — 1.16 against 1.134 — and the deck would have
+to remember state that could then drift out of step with what's playing. Modelling
+±8% only is what buys the stateless design, and there's a test that fails if that
+ever stops being true.
+
+Needs a host with `actions.setRate` and `state.rate`. Without them the buttons are
+decorative and the platter stays at 33 — the same deck an older host always had.
+The **host** owns the rate, clamps it, and keeps its own way back to normal
+(Settings, plus a reset on every launch), so this plugin is never the only route
+out of a speed it put you in.
+
+**A deck is not a setting.** Each livery is contributed as its own visualizer, so
+you choose one from the same picker that offers the plain artwork — which is why
+adding a second deck needed none of the settings machinery 1.0.1 removed. The skin
+is fixed when the instance mounts; nothing is stored and nothing mutates a running
+deck from underneath it.
+
+What a skin may change is presentation and *mounting*. What it must not change is
+the record: the pressing, the groove painting and the cue maths are shared, so two
+decks can never disagree about where a track sits. `src/skins.ts` holds the whole
+difference between them.
+
+Two things about the silver deck worth knowing:
+
+- **It mounts the arm at the real thing's proportions** — pivot 215mm from the
+  spindle, 230mm effective length, against a 151mm record radius. The plain deck
+  can't: its disc is inscribed in the whole box, so a pivot at 1.42·radius would
+  land outside it, and both numbers have to be pulled in. Shrinking the platter to
+  make room for the controls is what buys the authentic geometry.
+- **It names its own colours**, the one exception to the skin-token rule below. A
+  depiction of a specific object cannot take its palette from elsewhere — brushed
+  aluminium that turned lilac under a purple skin would be worse than ignoring the
+  skin. The record's surface is still alpha-only, so it still cannot break one.
+- **The slipmat is not modelled.** The reference photo shows a bare one, because a
+  deck at rest has no record on it — but this plugin exists to draw the queue *as*
+  a record, so the slipmat is never visible. What the skin adopts is the deck
+  around the disc.
 
 ## Why there are no options
 
@@ -103,7 +201,7 @@ streaming tracks presses even bands rather than collapsing to nothing.
 ```bash
 npm install
 npm run verify      # typecheck + test + build
-npm test            # 56 tests
+npm test            # 75 tests
 npm run build       # regenerates index.js
 npm run package     # build + test + vinyl-deck.zip + update.json
 ```

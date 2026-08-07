@@ -18,7 +18,13 @@ export const DECK_CSS = `
   --vinyl-body: color-mix(in srgb, var(--bg-primary) 26%, #000);
   --vinyl-body-hi: color-mix(in srgb, var(--bg-primary) 46%, #000);
   --vinyl-sheen: #fff;
-  --k: 1; /* deck size / 368 reference — see repress() */
+  --k: 1; /* record size / 368 reference — see repress() */
+  /* Plinth box and its own 368 reference. Defaulted so a livery's furniture has
+     something sane to lay out against on the frame between mount() and the first
+     repress(), rather than collapsing to auto. */
+  --plinth-w: 100%;
+  --plinth-h: 100%;
+  --pk: 1;
   position: absolute;
   inset: 0;
   display: flex;
@@ -307,4 +313,501 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   transition: transform .24s cubic-bezier(.34,1.5,.6,1);
 }
 .lifted .shadow { opacity: 1; }
+
+/* ===================================================================
+   SL-1200 livery
+   ===================================================================
+   Scoped to .skin-sl1200 throughout, so it costs the plain deck nothing but
+   bytes.
+
+   THIS SKIN NAMES ITS OWN COLOURS, and is the one deliberate exception to the
+   plugin's skin-token rule. The rest of the deck derives every colour from the
+   app's skin so it cannot clash with one; a silver direct-drive deck is a
+   depiction of a specific object, and a "brushed aluminium" that turned lilac
+   under a purple skin would be a worse outcome than ignoring the skin. The
+   CANVAS is untouched — grooves are still painted in alpha only, so the record
+   itself still cannot break anything.
+
+   GEOMETRY. The plinth is landscape (1.19:1, from the reference photo's 535x450)
+   and takes the slot's short side as its WIDTH. Forcing it square was the first
+   attempt and it put the record on top of the bottom-left controls. Percentages
+   below are read straight off that photo: left/width against the plinth's width,
+   top/height against its height. Circles use aspect-ratio so a single width
+   percentage cannot skew them.
+
+   SIZES use --pk (plinth/368), not --k (record/368). The record is deliberately
+   smaller here to make room for the furniture, and scaling the furniture by the
+   record would undo exactly the room it was given.
+
+   NO BACKTICKS anywhere below — the whole sheet is one template literal. */
+
+.skin-sl1200 {
+  /* A record is black on any deck, so stop deriving the vinyl from the skin. */
+  --vinyl-body: #17181b;
+  --vinyl-body-hi: #25272c;
+  --mk7-silver: #c4c7c9;
+  --mk7-silver-hi: #eaecee;
+  --mk7-silver-lo: #9a9ea2;
+  --mk7-chrome-hi: #f6f8fa;
+  --mk7-chrome-lo: #7d8186;
+  --mk7-ink: #33363b;
+  --mk7-red: #d22b28;
+}
+
+/* The plinth: brushed aluminium with a fine vertical grain. Centred on the same
+   point as the platter, so the photo's x-fractions transfer directly — the
+   platter's centre lands at 50% - 11% = 39% of the width, which is where it sits
+   on the real deck. Pointer-transparent; only START/STOP re-enables itself. */
+.skin-sl1200 .plinth {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--plinth-w);
+  height: var(--plinth-h);
+  transform: translate(-50%, -50%);
+  border-radius: calc(9px * var(--pk));
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(255,255,255,.05) 0 1px, rgba(0,0,0,.035) 1px 3px),
+    linear-gradient(160deg, var(--mk7-silver-hi) 0%, var(--mk7-silver) 45%,
+      var(--mk7-silver-lo) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.75),
+    inset 0 calc(-2px * var(--pk)) calc(5px * var(--pk)) rgba(0,0,0,.2),
+    0 calc(12px * var(--pk)) calc(30px * var(--pk)) rgba(0,0,0,.5);
+}
+
+/* Platter rim and its stroboscope dots.
+   A 302mm record on a 332mm platter leaves ~10% of platter showing, which is
+   where the dots live. Sits inside .platter at a negative inset so it inherits
+   the disc's box and offset for free. */
+.skin-sl1200 .rim {
+  position: absolute;
+  inset: -6.5%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle at 36% 28%,
+    var(--mk7-silver-hi), var(--mk7-silver) 55%, var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3),
+              0 calc(4px * var(--pk)) calc(10px * var(--pk)) rgba(0,0,0,.4);
+}
+/* The dots: a dashed ring in the band of rim the record leaves visible. Sized in
+   degrees, so they stay round-ish at any deck size.
+   Its own element, not a pseudo, because JS rotates it independently of the
+   platter to reproduce the strobe illusion (see frame()). */
+.skin-sl1200 .rim .dots {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  will-change: transform;
+  background: repeating-conic-gradient(from 0deg,
+    #16181c 0deg 1.3deg, transparent 1.3deg 4.2deg);
+  -webkit-mask: radial-gradient(circle, transparent 88.5%, #000 90%, #000 97%, transparent 98.5%);
+  mask: radial-gradient(circle, transparent 88.5%, #000 90%, #000 97%, transparent 98.5%);
+}
+
+/* The record's own drop shadow is a big soft one, right for a disc floating on
+   black and wrong here — it washed straight over the rim and swallowed the strobe
+   dots. On a deck the record is SEATED on the platter, so it gets a tight contact
+   shadow and the rim keeps the soft one. */
+.skin-sl1200 .body {
+  box-shadow: 0 calc(2px * var(--pk)) calc(5px * var(--pk)) -1px rgba(0,0,0,.55);
+}
+
+/* 45rpm adaptor well, top-left. */
+.skin-sl1200 .adaptor {
+  position: absolute;
+  left: 2.8%; top: 7.6%; width: 10.4%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%,
+    var(--mk7-chrome-hi), var(--mk7-silver) 50%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32),
+              inset 0 calc(2px * var(--pk)) calc(3px * var(--pk)) rgba(255,255,255,.55);
+}
+.skin-sl1200 .adaptor::after {
+  content: "";
+  position: absolute; inset: 32%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--mk7-silver-lo), var(--mk7-silver));
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.5);
+}
+
+/* Pop-up target light. */
+.skin-sl1200 .target {
+  position: absolute;
+  left: 68.8%; top: 9.6%; width: 4.4%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 34%, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.38);
+}
+
+/* Power rotary, bottom-left. */
+.skin-sl1200 .power {
+  position: absolute;
+  left: 0.9%; top: 73.5%; width: 7.6%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%,
+    var(--mk7-chrome-hi), var(--mk7-silver-lo) 68%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.42),
+              0 calc(1px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.45);
+}
+.skin-sl1200 .power::after {
+  content: "";
+  position: absolute; left: 45%; top: 10%; width: 10%; height: 42%;
+  border-radius: 1px;
+  background: var(--mk7-ink);
+}
+
+/* Strobe lamp. Lit while the platter is driven, dimmed when the arm is up — the
+   one piece of furniture that reads playback, because on the real deck it is the
+   thing that tells you the platter is running. */
+.skin-sl1200 .strobe {
+  position: absolute;
+  /* Further out and lower than the photo's 8.4%/75%. The platter's circle has
+     receded by this height, but only just — at the photo's spot the rim clipped
+     the lamp's inner corner, because this plinth is squarer than the real one and
+     the disc reaches further left at the bottom. */
+  left: 6.8%; top: 79%; width: 3.6%; height: 4.6%;
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, #ff5b52, var(--mk7-red) 45%, #8e1b19);
+  box-shadow: 0 0 calc(9px * var(--pk)) rgba(210,43,40,.8),
+              inset 0 1px 1px rgba(255,255,255,.5);
+  transition: opacity .3s ease, box-shadow .3s ease;
+}
+/* Dims with the MOTOR, not with the arm. The lamp exists to light the dots so you
+   can read the platter's speed — a stopped platter has no speed to read, while a
+   cued-up one (arm raised, platter spinning) still does. Tying this to the lifted
+   state had it going dark at exactly the moment it was still useful. */
+.skin-sl1200.motor-off .strobe {
+  opacity: .28;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.2);
+}
+
+/* START/STOP. The only control here that does anything, and it drives the same
+   action the cue lever does — on the real deck it is the primary transport, so
+   leaving it decorative beside a working lever would be the odd choice. */
+.skin-sl1200 .start {
+  position: absolute;
+  left: 1.3%; top: 85%; width: 11%; height: 8.4%;
+  padding: 0;
+  border: none;
+  border-radius: calc(2px * var(--pk));
+  /* Nearly flat and LIGHTER than the plinth, with a thin dark outline — the real
+     button is a pale slab, not the chunky gradient cap this used to be. Its whole
+     presence on the deck comes from being brighter than the aluminium around it,
+     so the heavy top-highlight-to-dark-bottom ramp read as the wrong object. */
+  background: linear-gradient(180deg, #f2f4f6, #e4e6e9);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
+              inset 0 1px 0 rgba(255,255,255,.9),
+              0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.25);
+  color: var(--mk7-ink);
+  /* Small, wide-tracked and low-contrast: on the real button the legend is a
+     quiet caption, not a label filling the face. */
+  font: 500 calc(4.2px * var(--pk))/1 system-ui, sans-serif;
+  letter-spacing: .1em;
+  opacity: .96;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.skin-sl1200 .start:hover { filter: brightness(1.03); }
+.skin-sl1200 .start:active {
+  background: linear-gradient(180deg, #dcdee1, #eceef0);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
+              inset 0 calc(1.5px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.3);
+}
+/* The recessed well the button sits in. */
+.skin-sl1200 .start::before {
+  content: "";
+  position: absolute;
+  inset: calc(-2px * var(--pk));
+  border-radius: calc(3px * var(--pk));
+  box-shadow: inset 0 1px calc(2px * var(--pk)) rgba(0,0,0,.28);
+  pointer-events: none;
+}
+
+/* 33 / 45. Real buttons now that the contract carries a rate — they ask the host
+   for 1x and 1.35x, and the lit one is driven by the host's rate rather than by
+   their own clicks, so they stay right when it's changed from Settings. Both lit
+   is 78, exactly how the real deck shows it. */
+.skin-sl1200 .speeds {
+  position: absolute;
+  /* 13.4%, not the photo's 12.1%: START/STOP ends at 12.3% and the two were
+     touching, which their shadows turned into an apparent overlap. On the real
+     deck there is daylight between them. */
+  left: 13.4%; top: 90.5%; width: 12.5%; height: 4.6%;
+  display: flex;
+  gap: 6%;
+  pointer-events: auto;
+}
+.skin-sl1200 .speeds button {
+  flex: 1;
+  padding: 0;
+  border: none;
+  border-radius: calc(1.5px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.28);
+  color: var(--mk7-ink);
+  font: 600 calc(4.5px * var(--pk))/1 system-ui, sans-serif;
+  cursor: pointer;
+  transition: background .18s ease, box-shadow .18s ease, color .18s ease;
+}
+.skin-sl1200 .speeds button:hover { filter: brightness(1.06); }
+.skin-sl1200 .speeds button:active { filter: brightness(.92); }
+.skin-sl1200 .speeds button.on {
+  background: linear-gradient(180deg, #ff6a60, var(--mk7-red));
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3), 0 0 calc(6px * var(--pk)) rgba(210,43,40,.6);
+}
+
+/* Pitch fader. A real control now that the contract carries a rate: it trims the
+   selected speed by up to +/-8%, the SL-1200's default range.
+   The --travel property is 0 at the top of the slot and 1 at the bottom, written
+   by frame() from the host's rate (and by the drag while the hand owns it). */
+.skin-sl1200 .pitch {
+  --travel: .5;
+  position: absolute;
+  left: 91.6%; top: 52.2%; width: 3.7%; height: 33.3%;
+  border-radius: calc(3px * var(--pk));
+  background: linear-gradient(180deg, #b4b7ba, #d6d8da);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32),
+              inset 0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.3);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.skin-sl1200 .pitch:active { cursor: grabbing; }
+
+/* The +/- marks. Minus at the top, plus at the bottom: on a Technics you push the
+   fader away from you to slow the record down, and that is the one thing about
+   this control nobody can guess from its shape. */
+.skin-sl1200 .pmark {
+  position: absolute;
+  left: 115%;
+  color: var(--mk7-ink);
+  opacity: .6;
+  font: 600 calc(6px * var(--pk))/1 system-ui, sans-serif;
+  pointer-events: none;
+}
+.skin-sl1200 .pminus { top: calc(-2px * var(--pk)); }
+.skin-sl1200 .pplus { bottom: calc(-2px * var(--pk)); }
+
+/* Live readout, under the fader. Blank at 0 — a deck at its quartz-locked speed
+   doesn't announce itself, and a permanent "0.0%" would be noise. */
+.skin-sl1200 .pval {
+  position: absolute;
+  left: 84%; top: 86.5%; width: 16%;
+  text-align: center;
+  color: var(--mk7-ink);
+  opacity: 0;
+  font: 600 calc(5px * var(--pk))/1 system-ui, sans-serif;
+  pointer-events: none;
+  transition: opacity .2s ease;
+}
+.skin-sl1200.off-speed .pval { opacity: .85; color: var(--mk7-red); }
+.skin-sl1200 .pitch::before {
+  content: "";
+  position: absolute;
+  left: 40%; top: 5%; width: 20%; height: 90%;
+  border-radius: calc(2px * var(--pk));
+  background: #494d51;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.75);
+}
+/* The knob. Rides the slot from --travel, with its own height taken out of the
+   range so it can't hang off either end. No transition: a fader has to track the
+   hand exactly, and easing here reads as lag (same reason the tonearm drops its
+   transition mid-drag). */
+.skin-sl1200 .pitch i {
+  position: absolute;
+  left: -42%; right: -42%;
+  top: calc(var(--travel) * (100% - 11%));
+  height: 11%;
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 45%, var(--mk7-chrome-lo));
+  box-shadow: 0 calc(1px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.55),
+              inset 0 1px 1px rgba(255,255,255,.95);
+  pointer-events: none;
+}
+.skin-sl1200 .pitch i::after {
+  content: "";
+  position: absolute; left: 8%; right: 8%; top: 42%; height: 16%;
+  background: var(--mk7-red);
+  border-radius: 1px;
+}
+
+/* RESET — the quartz lock. Snaps back to exactly the selected speed however far
+   the fader has been pushed, keeping the 33/45 choice. Lights while off-speed,
+   so there is always something visibly offering the way back. */
+.skin-sl1200 .reset {
+  position: absolute;
+  /* Right of the arm rest, not under it: at the photo's 83.2% the two boxes
+     overlapped, which read as one broken control rather than two. */
+  left: 86.6%; top: 81.5%; width: 3.4%; height: 3.4%;
+  padding: 0;
+  border: none;
+  border-radius: calc(1.5px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background .2s ease, box-shadow .2s ease;
+}
+.skin-sl1200 .reset:hover { filter: brightness(1.08); }
+.skin-sl1200.off-speed .reset {
+  background: linear-gradient(180deg, #ff6a60, var(--mk7-red));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3), 0 0 calc(5px * var(--pk)) rgba(210,43,40,.55);
+}
+
+/* Tonearm rest, below where the arm parks. */
+.skin-sl1200 .rest {
+  position: absolute;
+  left: 82.2%; top: 77.8%; width: 2.4%; height: 5.5%;
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.38);
+}
+
+/* Cast foot at the bottom edge. */
+.skin-sl1200 .foot {
+  position: absolute;
+  left: 55.5%; top: 92%; width: 3.2%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32);
+}
+
+/* Model line, bottom centre.
+   Deliberately NOT the manufacturer's wordmark: reproducing a trademark in a
+   shipped plugin is a different decision from imitating a shape, and this line
+   costs nothing to keep generic. */
+.skin-sl1200 .brand {
+  position: absolute;
+  left: 58%; top: 88%; width: 30%;
+  text-align: center;
+  color: var(--mk7-ink);
+  opacity: .5;
+  font: 500 calc(4.5px * var(--pk))/1.4 system-ui, sans-serif;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+
+/* --- the arm, in silver --- */
+
+/* The straight tube gives way to an S. */
+.skin-sl1200 .tube { display: none; }
+.skin-sl1200 .sarm {
+  position: absolute;
+  left: 0; right: 0;
+  top: calc(-15px * var(--pk));
+  height: calc(30px * var(--pk));
+  overflow: visible;
+}
+/* preserveAspectRatio="none" stretches the viewBox to the arm's real length, so
+   the stroke has to opt out of that scaling or it thins to a hair. Drawn twice:
+   a dark under-stroke for the tube's shaded underside, then the bright one. */
+.skin-sl1200 .sarm path {
+  fill: none;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.skin-sl1200 .sarm .under {
+  stroke: rgba(0,0,0,.5);
+  stroke-width: calc(10.5px * var(--pk));
+}
+.skin-sl1200 .sarm .over {
+  stroke: url(#armgrad);
+  stroke-width: calc(7.5px * var(--pk));
+}
+
+/* Gimbal: three concentric silver rings, so the base reads as a mechanism rather
+   than a dot. */
+.skin-sl1200 .pivot {
+  left: calc(-21px * var(--pk)); top: calc(-21px * var(--pk));
+  width: calc(42px * var(--pk)); height: calc(42px * var(--pk));
+  background: radial-gradient(circle at 34% 28%,
+    var(--mk7-chrome-hi), var(--mk7-silver) 42%, var(--mk7-chrome-lo) 100%);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.42),
+              0 calc(3px * var(--pk)) calc(7px * var(--pk)) rgba(0,0,0,.45);
+}
+.skin-sl1200 .pivot::after {
+  inset: calc(8px * var(--pk));
+  background: radial-gradient(circle at 38% 32%, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32);
+}
+.skin-sl1200 .pivot::before {
+  content: "";
+  position: absolute;
+  inset: calc(15px * var(--pk));
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 34%, var(--mk7-chrome-hi), var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.36);
+  z-index: 1;
+}
+/* Counterweight, on its stub behind the pivot. */
+/* Counterweight. Needs a hard edge and a darker underside or it dissolves into
+   the plinth, which is the same silver — the first pass read as a white smudge. */
+.skin-sl1200 .counter {
+  left: calc(-58px * var(--pk)); top: calc(-10px * var(--pk));
+  width: calc(36px * var(--pk)); height: calc(20px * var(--pk));
+  border-radius: calc(4px * var(--pk));
+  background: linear-gradient(180deg,
+    var(--mk7-chrome-hi) 0%, var(--mk7-silver) 32%, #6f7378 88%, #55585c 100%);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.9),
+              0 0 0 1px rgba(0,0,0,.45),
+              0 calc(3px * var(--pk)) calc(6px * var(--pk)) rgba(0,0,0,.5);
+}
+/* Knurling, so it reads as the thing you turn to balance the arm. */
+.skin-sl1200 .counter::before {
+  content: "";
+  position: absolute;
+  inset: 22% 12%;
+  border-radius: calc(2px * var(--pk));
+  background: repeating-linear-gradient(90deg,
+    rgba(0,0,0,.22) 0 1px, rgba(255,255,255,.28) 1px calc(3px * var(--pk)));
+  opacity: .5;
+}
+.skin-sl1200 .counter::after {
+  content: "";
+  position: absolute;
+  right: calc(-14px * var(--pk)); top: 42%;
+  width: calc(16px * var(--pk)); height: 16%;
+  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  border-radius: 1px;
+}
+
+/* Headshell: a squarer silver block with a finger lift. */
+.skin-sl1200 .head {
+  width: calc(34px * var(--pk)); height: calc(19px * var(--pk));
+  top: calc(-9.5px * var(--pk));
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 46%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.95),
+              0 0 0 1px rgba(0,0,0,.48),
+              0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.4);
+}
+.skin-sl1200 .head::before {
+  content: "";
+  position: absolute;
+  left: calc(-9px * var(--pk)); top: 34%;
+  width: calc(11px * var(--pk)); height: calc(3px * var(--pk));
+  border-radius: calc(1.5px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
+  box-shadow: 0 1px 1px rgba(0,0,0,.4);
+}
+/* Cartridge stays at the arm's far end — armAngleDeg solves for the stylus being
+   exactly there, so this must not drift back along the headshell. */
+.skin-sl1200 .head::after {
+  right: calc(-1px * var(--pk));
+  width: calc(9px * var(--pk));
+  height: calc(12px * var(--pk));
+  background: linear-gradient(180deg, #2f343b, #b6bbc2);
+}
+
+/* NOTE: "lifted" lands on .deck itself, so these are compound selectors, not
+   descendant ones — the arm's own parts are what brighten. */
+.skin-sl1200.lifted .head,
+.skin-sl1200.lifted .sarm .over { filter: brightness(1.15); }
 `;

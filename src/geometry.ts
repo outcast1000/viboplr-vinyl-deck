@@ -50,14 +50,29 @@ export const MIN_GAP_PX = 2;
 export const MAX_GAP_SHARE = 0.5;
 
 /** Tonearm mounting, as multiples of the disc radius. */
-export const ARM = {
+export interface ArmSpec {
   /** Where the pivot sits, measured from the disc centre. Negative = above. */
-  pivotAngleDeg: -38,
+  pivotAngleDeg: number;
   /** Pivot distance from centre. >1 puts it clear of the record. */
-  pivotDistance: 1.12,
+  pivotDistance: number;
   /** Effective arm length, pivot to stylus. */
+  length: number;
+}
+
+/**
+ * The default mount: compressed on purpose.
+ *
+ * A real SL-1200 sits its pivot at 1.42·rEdge with a 1.52·rEdge effective length
+ * (215mm and 230mm against a 151mm record). Those don't fit a deck whose disc is
+ * *inscribed* in its box — the pivot would land outside it — so the plain deck
+ * pulls both in. A skin that shrinks the platter to make room for a plinth can
+ * afford the true numbers; see skins.ts.
+ */
+export const ARM: ArmSpec = {
+  pivotAngleDeg: -38,
+  pivotDistance: 1.12,
   length: 1.28,
-} as const;
+};
 
 export interface VinylGeometry {
   /** Deck width/height in px; the disc is inscribed in it. */
@@ -230,13 +245,13 @@ export interface ArmMount {
   distance: number;
 }
 
-export function buildArmMount(geo: VinylGeometry): ArmMount {
-  const ang = (ARM.pivotAngleDeg * Math.PI) / 180;
-  const distance = geo.rEdge * ARM.pivotDistance;
+export function buildArmMount(geo: VinylGeometry, spec: ArmSpec = ARM): ArmMount {
+  const ang = (spec.pivotAngleDeg * Math.PI) / 180;
+  const distance = geo.rEdge * spec.pivotDistance;
   return {
     px: geo.cx + distance * Math.cos(ang),
     py: geo.cy + distance * Math.sin(ang),
-    length: geo.rEdge * ARM.length,
+    length: geo.rEdge * spec.length,
     distance,
   };
 }

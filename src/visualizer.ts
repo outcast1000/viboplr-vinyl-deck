@@ -26,19 +26,106 @@ import {
 } from "./geometry";
 import { paintVinylSurface } from "./surface";
 import { DECK_CSS } from "./style";
+import { type DeckSkin, skinConfig } from "./skins";
+import {
+  RATE_45 as R45,
+  composeRate,
+  decomposeRate,
+  formatPercent,
+  percentToTravel,
+  travelToPercent,
+} from "./pitch";
 
 /**
- * The deck has no options.
+ * 45rpm expressed against a 33⅓ pressing.
  *
- * It used to carry three — a crop, a platter tilt and a gap outline — and a
- * settings panel to drive them. They are gone on purpose: every one of them was
- * a way to make the deck look like something other than a record, two of them
- * cost accuracy (the tilt makes cueing read the radius off a projection, the
- * crop mirrors the arm), and none answered a question a listener actually has.
- * A real deck has a cue lever and a tonearm, so this one has a cue lever and a
- * tonearm. Nothing to configure means nothing to get wrong.
+ * The deck's speed buttons don't set an abstract multiplier, they say "play this
+ * record at the other speed" — and 45 / 33⅓ is what that ratio is. Pitch rides
+ * along on the host side, so it sounds like the record is being misplayed, which
+ * is the entire point.
+ *
+ * Re-exported from ./pitch, which owns the speed maths now that the fader trims
+ * these rather than replacing them.
  */
-export function createVinylDeckVisualizer(): PluginVisualizer {
+export { RATE_45 } from "./pitch";
+
+/**
+ * Platter spin-up and braking time constants, ms.
+ *
+ * The SL-1200's headline spec is reaching 33⅓ in a third of a turn, and its
+ * electronic brake stops it faster still. Exponential easing, so these are ~63%
+ * marks: 220ms reaches speed in about half a second, 110ms stops it in a quarter.
+ */
+const SPINUP_TAU_MS = 220;
+const BRAKE_TAU_MS = 110;
+
+/** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
+const PLINTH_HTML =
+  '<div class="plinth">' +
+  '<div class="adaptor"></div>' +
+  '<div class="target"></div>' +
+  '<div class="power"></div>' +
+  '<div class="strobe"></div>' +
+  '<button class="start" type="button">START&#183;STOP</button>' +
+  // Real buttons. Which one is lit comes from state.rate, never from a local
+  // toggle — the host owns the rate and may change it from Settings.
+  '<div class="speeds">' +
+  '<button class="s33" type="button" aria-label="33 rpm">33</button>' +
+  '<button class="s45" type="button" aria-label="45 rpm">45</button>' +
+  "</div>" +
+  // The fader. `-` at the top and `+` at the bottom, the Technics way round:
+  // you push it away from you to slow the record down. That's the one thing here
+  // nobody can guess from the shape, so it's marked.
+  '<div class="pitch">' +
+  '<span class="pmark pminus">&#8722;</span>' +
+  '<span class="pmark pplus">+</span>' +
+  '<i></i>' +
+  "</div>" +
+  '<div class="pval"></div>' +
+  '<button class="reset" type="button" aria-label="Reset pitch"></button>' +
+  '<div class="rest"></div>' +
+  '<div class="foot"></div>' +
+  '<div class="brand">Direct Drive</div>' +
+  "</div>";
+
+/**
+ * The S-shaped arm tube.
+ *
+ * Endpoints are load-bearing: the path starts at the pivot (0,13) and ends at the
+ * stylus (100,13), so however the bend is drawn the straight-line distance the
+ * geometry solves for is unchanged. `preserveAspectRatio="none"` stretches the
+ * viewBox to the arm's real length, which is why the stroke opts out of scaling.
+ */
+const SARM_SVG =
+  '<svg class="sarm" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true">' +
+  '<defs><linearGradient id="armgrad" x1="0" y1="0" x2="0" y2="1">' +
+  '<stop offset="0" stop-color="#f4f6f8"/>' +
+  '<stop offset=".5" stop-color="#c9cbcd"/>' +
+  '<stop offset="1" stop-color="#82868b"/>' +
+  "</linearGradient></defs>" +
+  // Drawn twice: a dark under-stroke for the tube's shaded underside, then the
+  // bright one over it. One flat stroke read as wire against the plinth.
+  '<path class="under" d="M0,13 C20,13 30,7 52,7 C74,7 80,17 100,13"/>' +
+  '<path class="over" d="M0,13 C20,13 30,7 52,7 C74,7 80,17 100,13"/>' +
+  "</svg>";
+
+/**
+ * The deck, in one of its liveries.
+ *
+ * `skin` is NOT a setting — each livery is contributed to the host as its own
+ * visualizer, so the user picks one from the visualizer picker and this value is
+ * fixed for the instance's whole life. That is deliberate: 1.0.1 removed every
+ * option and the settings panel with them, and this adds a second deck without
+ * bringing any of that back. There is still nothing to configure, no stored
+ * preference, and no options object mutated behind a running instance.
+ *
+ * What each skin may change is presentation and *mounting* — the plinth, the
+ * colours, where the platter sits, how long the arm is. What it must not change
+ * is the record: the pressing, the groove painting and the cue maths are shared,
+ * so both decks agree about where a track is.
+ */
+export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisualizer {
+  const cfg = skinConfig(skin);
   let host: PluginVisualizerHost;
   let root: ShadowRoot;
   let deck: HTMLElement;
@@ -48,10 +135,64 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
   let label: HTMLElement;
   let arm: HTMLElement;
   let lever: HTMLElement;
+  let dots: HTMLElement | null = null;
+  let s33: HTMLElement | null = null;
+  let s45: HTMLElement | null = null;
+  let pitch: HTMLElement | null = null;
+  let pval: HTMLElement | null = null;
+
+  /**
+   * True while the pitch fader is under the hand.
+   *
+   * Same reason as `dragging` on the tonearm: frame() positions the knob from the
+   * host's rate, and the host doesn't know about the drag until we send it, so a
+   * frame landing mid-gesture would yank the knob back under the cursor.
+   */
+  let scrubbingPitch = false;
+
+  /**
+   * Platter angle, ACCUMULATED rather than derived from timeMs.
+   *
+   * `(timeMs / 1800) * 360` is fine at a fixed speed, but multiplying it by the
+   * rate makes the whole history rescale, so the record visibly jumps the instant
+   * the speed changes. Integrating the delta keeps the picture continuous through
+   * a 33 → 45 press, which is what a real platter does — it accelerates, it does
+   * not teleport.
+   */
+  let spinAngle = 0;
+  /** Strobe-dot angle, integrated the same way. See frame(). */
+  let dotAngle = 0;
+  let lastMs: number | null = null;
 
   /** Last `playing` seen in frame(). The lever states the value it wants rather
    *  than toggling, per the contract, so it has to know the current one. */
   let playing = false;
+
+  /** Last `rate` seen in frame(). Drives the platter's speed, the strobe drift
+   *  and which speed button is lit. */
+  let rate = 1;
+
+  /**
+   * Whether the MOTOR is off, as distinct from the music being paused.
+   *
+   * A deck has two independent mechanisms that both stop the sound, and they look
+   * nothing alike: START/STOP cuts the platter and leaves the arm down, while the
+   * cue lever lifts the arm and leaves the platter spinning. The host has only one
+   * `playing` flag, so which of the two we're depicting is genuinely this deck's
+   * own state — the one thing here worth remembering locally.
+   *
+   * Self-correcting: any frame that reports playback clears it, because sound
+   * means the platter must be turning however it was started.
+   */
+  let motorStopped = false;
+
+  /** Previous frame's `playing`, so the motor flag can be cleared on the rising
+   *  edge rather than the level. See frame(). */
+  let wasPlaying = false;
+
+  /** Platter speed, eased toward its target so the deck spins up and brakes
+   *  instead of snapping. In units where 1 is 33⅓. */
+  let spinVel = 1;
 
   /**
    * True between pointerdown and pointerup on the headshell.
@@ -81,13 +222,34 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
   /** Lay out and repaint. Called on a queue or size change — never per frame. */
   function repress(tracks: readonly PluginVisualizerTrack[]) {
     const durations = tracks.map((t) => t.durationSecs);
+    // The plinth takes the largest square the slot allows; the record takes the
+    // skin's share of it. A bare deck spends the whole box on the disc; one with
+    // controls has to leave them room, and that clearance is also what lets it
+    // mount the arm at true scale (see skins.ts).
     const box = Math.max(40, Math.min(size.width, size.height));
-    geo = buildGeometry(box);
-    mountPoint = buildArmMount(geo);
+    const plinthW = box;
+    const plinthH = box / cfg.aspect;
+    const discBox = Math.max(40, plinthW * cfg.platterScale);
+    geo = buildGeometry(discBox);
+    mountPoint = buildArmMount(geo, cfg.arm);
     bands = layoutBands(durations, geo);
 
-    // The disc is inscribed in the largest square the slot allows and centred by
-    // the deck's flex box. It is never cropped or scaled: a record is what it is.
+    deck.style.setProperty("--plinth-w", `${plinthW}px`);
+    deck.style.setProperty("--plinth-h", `${plinthH}px`);
+    // Furniture is authored against the PLINTH's 368px reference, not the record's
+    // — otherwise a skin that shrinks the disc to make room also shrinks the
+    // controls it made room for.
+    deck.style.setProperty("--pk", String(plinthW / 368));
+
+    // Centred by the deck's flex box, then shifted for skins that put the platter
+    // off-centre. Left unset when there's no offset, so the plain deck's platter
+    // carries no transform at all — the crop that used to live here is gone and
+    // nothing should look like it came back.
+    if (cfg.offsetX || cfg.offsetY) {
+      platter.style.transform =
+        `translate(${cfg.offsetX * plinthW}px, ${cfg.offsetY * plinthH}px)`;
+    }
+
     platter.style.width = `${geo.size}px`;
     platter.style.height = `${geo.size}px`;
 
@@ -106,24 +268,37 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
     arm.style.top = `${mountPoint.py}px`;
     arm.style.width = `${mountPoint.length}px`;
 
-    // Bottom-right corner, on the 45° diagonal just outside the disc.
-    //
-    // The corner is the roomiest spot on a square that holds an inscribed
-    // circle, and it's the only one the arm never visits: the pivot and its
-    // counterweight own the top-right, and the head sweeps down-left of them.
-    // Sitting the lever's centre at 1.20·rEdge along the diagonal leaves it well
-    // clear of both the vinyl and the slot edge at any deck size.
     const k = geo.size / 368;
     const leverW = 11 * k;
     const leverH = 22 * k;
-    const diagonal = geo.rEdge * 1.2 * Math.SQRT1_2;
-    // Clamped to the platter box, which is what `.deck { overflow: hidden }`
-    // clips against. rEdge is size/2 - 2, so the diagonal alone leaves room at
-    // any normal size — but the clamp costs nothing and keeps a very small slot
-    // (or a future geometry tweak) from pushing the knob off the edge.
-    const inset = 6 * k;
-    lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
-    lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
+    if (cfg.leverAt) {
+      // A deck with a plinth has a real place for the lever: beside the arm base,
+      // where your hand already is. Given in plinth fractions, so convert into
+      // the platter's own coordinates — the lever is a child of .platter, and
+      // nothing clips it when it lands outside (only .deck has overflow: hidden).
+      // Both boxes are centred on the same point, so the offset is just the
+      // difference in their sizes, halved.
+      const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
+      const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
+      lever.style.left = `${cfg.leverAt.x * plinthW - platterLeft - leverW / 2}px`;
+      lever.style.top = `${cfg.leverAt.y * plinthH - platterTop - leverH / 2}px`;
+    } else {
+      // Bottom-right corner, on the 45° diagonal just outside the disc.
+      //
+      // The corner is the roomiest spot on a square that holds an inscribed
+      // circle, and it's the only one the arm never visits: the pivot and its
+      // counterweight own the top-right, and the head sweeps down-left of them.
+      // Sitting the lever's centre at 1.20·rEdge along the diagonal leaves it
+      // well clear of both the vinyl and the slot edge at any deck size.
+      const diagonal = geo.rEdge * 1.2 * Math.SQRT1_2;
+      // Clamped to the platter box, which is what `.deck { overflow: hidden }`
+      // clips against. rEdge is size/2 - 2, so the diagonal alone leaves room at
+      // any normal size — but the clamp costs nothing and keeps a very small slot
+      // (or a future geometry tweak) from pushing the knob off the edge.
+      const inset = 6 * k;
+      lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
+      lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
+    }
 
     // Each band is grooved from its OWN track's waveform, where the host had one
     // cached. Absent peaks fall back to an even groove rather than a blank band,
@@ -213,6 +388,92 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
     target.addEventListener("pointercancel", up);
   }
 
+  /**
+   * Ask for the opposite of what we were last shown. Shared by the cue lever and
+   * START/STOP.
+   *
+   * States the value rather than toggling, per the contract — a visualizer renders
+   * from a snapshot that may be a frame stale, and a toggle read against a stale
+   * snapshot inverts. The `typeof` guard keeps an older host without the action
+   * degrading to the decorative controls it had before, instead of throwing on
+   * every click.
+   */
+  function toggleTransport() {
+    if (typeof host.actions.setPlaying !== "function") return;
+    host.actions.setPlaying(!playing);
+  }
+
+  /**
+   * Ask the host for a playback rate.
+   *
+   * Guarded like `setPlaying`: a host older than the speed contract has no
+   * `setRate`, and there the buttons stay decorative rather than throwing. The
+   * host clamps whatever we send and owns the only route back to normal, so this
+   * plugin never has to be the thing standing between a user and 1x.
+   */
+  function setRate(r: number) {
+    if (typeof host.actions.setRate !== "function") return;
+    host.actions.setRate(r);
+  }
+
+  /** Paint the fader knob and its readout for a trim, without asking the host. */
+  function showPitch(percent: number) {
+    if (pitch) pitch.style.setProperty("--travel", String(percentToTravel(percent)));
+    if (pval) pval.textContent = formatPercent(percent);
+  }
+
+  /**
+   * Drag the pitch fader.
+   *
+   * Sends on every move rather than on release, because a pitch fader is a
+   * continuous control — hearing the record bend as you push it IS the feature,
+   * and a value that only landed on mouse-up would be a slider pretending to be a
+   * fader. The host clamps, and identical values are dropped so a jittery pointer
+   * can't spam the engine.
+   *
+   * Pointer capture on the element, as everywhere else here: the sandbox exposes
+   * no ambient `window`, so window-level drag listeners are impossible — and
+   * capture is the better primitive anyway.
+   */
+  function onPitchDown(e: PointerEvent) {
+    if (e.button !== 0 || typeof host.actions.setRate !== "function") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const target = e.currentTarget as HTMLElement;
+    // Which speed we're trimming is fixed for the gesture. Re-deriving it from
+    // the incoming rate each move would let a big drag cross into the next
+    // speed's window and make the fader jump a basis mid-pull.
+    const basis = decomposeRate(rate).basis;
+    let lastSent = rate;
+    scrubbingPitch = true;
+    target.setPointerCapture?.(e.pointerId);
+
+    const move = (ev: PointerEvent) => {
+      const r = target.getBoundingClientRect();
+      if (r.height <= 0) return;
+      const percent = travelToPercent((ev.clientY - r.top) / r.height);
+      showPitch(percent);
+      const next = composeRate(basis, percent);
+      // Quantised so a pointer resting still doesn't re-send the same speed.
+      if (Math.abs(next - lastSent) > 0.0005) {
+        lastSent = next;
+        setRate(next);
+      }
+    };
+    const up = () => {
+      scrubbingPitch = false;
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+    // Jump to where the press landed, so a click on the slot moves the knob
+    // there rather than requiring a drag from wherever it was.
+    move(e);
+  }
+
   return {
     mount(h) {
       host = h;
@@ -225,7 +486,7 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
       root.append(style);
 
       deck = doc.createElement("div");
-      deck.className = "deck lifted";
+      deck.className = `deck lifted skin-${cfg.name}`;
       // What rotates matters more than that something rotates. The canvas is
       // nothing but concentric rings, so it is rotationally symmetric and
       // spinning it alone is INVISIBLE. The label (asymmetric art) and the
@@ -233,8 +494,17 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
       // motion. The spindle, the specular sheen and the iridescence stay
       // outside: a real record's glint is fixed by the room light while the
       // grooves turn under it.
+      //
+      // The plinth comes FIRST so it paints under the platter, and the whole
+      // furniture block is absent (not merely hidden) on a skin that has none —
+      // so the bare deck's tree is exactly what it was, and the pointer-events
+      // reasoning below keeps holding without a second case to check.
       deck.innerHTML =
+        (cfg.furniture ? PLINTH_HTML : "") +
         '<div class="platter">' +
+        // Platter rim, with the stroboscope dots as their own element so they can
+        // be rotated independently of both the platter and the record.
+        (cfg.furniture ? '<div class="rim"><i class="dots"></i></div>' : "") +
         '<div class="body"></div>' +
         '<div class="spin">' +
         "<canvas></canvas>" +
@@ -251,7 +521,9 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
         // per-frame tracking.
         '<div class="armwrap"><div class="armrise"><div class="arm"><div class="armlift">' +
         '<div class="counter"></div><div class="pivot"></div>' +
-        '<div class="tube"></div><div class="shadow"></div><div class="head"></div>' +
+        '<div class="tube"></div>' +
+        (cfg.furniture ? SARM_SVG : "") +
+        '<div class="shadow"></div><div class="head"></div>' +
         "</div></div></div></div>" +
         "</div>";
       root.append(deck);
@@ -273,11 +545,46 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
       // animating a lift while the music kept going would be a lie.
       // `click`, not `pointerdown`: it's a button, and a press that turns into a
       // drag should not fire it.
-      lever.addEventListener("click", () => {
-        // Guard the newer action so an older host degrades to the decorative
-        // lever it had before, rather than throwing every click.
+      lever.addEventListener("click", toggleTransport);
+
+      // START/STOP, where the livery has one. Same action as the lever, because
+      // on a real deck they are two controls over one motor — and it would be an
+      // odd deck whose big labelled button did less than its cue lever.
+      // START/STOP drives the MOTOR. Same host action as the lever — there is only
+      // one `playing` — but it records that this deck is depicting a stopped
+      // platter rather than a raised arm, which is what makes the two controls
+      // look like the different mechanisms they are.
+      deck.querySelector(".start")?.addEventListener("click", () => {
         if (typeof host.actions.setPlaying !== "function") return;
+        // Stopping takes effect immediately — the brake is instant on a real deck.
+        // STARTING deliberately does not: the flag is left set and cleared by the
+        // rising edge in frame(), when sound actually begins. Clearing it here
+        // instead made the arm flick up for the frames between the request and the
+        // host catching up (motor running + still paused reads as a cue-lever
+        // pause), and started the platter before there was anything to hear.
+        if (playing) motorStopped = true;
         host.actions.setPlaying(!playing);
+      });
+
+      // Speed selector. Sets the rate the button names — a state, not a step, so
+      // it can't drift out of step with a rate the user changed in Settings.
+      dots = deck.querySelector(".dots");
+      s33 = deck.querySelector(".s33");
+      s45 = deck.querySelector(".s45");
+      // Changing speed KEEPS the fader where it is, as on a real deck — the
+      // buttons pick the basis, the fader trims it, and pressing 45 doesn't reach
+      // over and recentre the slider for you.
+      s33?.addEventListener("click", () => setRate(composeRate(1, decomposeRate(rate).percent)));
+      s45?.addEventListener("click", () => setRate(composeRate(R45, decomposeRate(rate).percent)));
+
+      pitch = deck.querySelector(".pitch");
+      pval = deck.querySelector(".pval");
+      pitch?.addEventListener("pointerdown", onPitchDown as EventListener);
+
+      // RESET is the quartz lock: back to exactly the selected speed, however far
+      // the fader has been pushed. Keeps the basis, drops the trim.
+      deck.querySelector(".reset")?.addEventListener("click", () => {
+        setRate(decomposeRate(rate).basis);
       });
 
       unsubs.push(
@@ -295,6 +602,9 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
       // Before the empty-queue bail below: the lever reads this to decide what
       // to ask for, and a stale value would make its first click a no-op.
       playing = state.playing;
+      // `rate` is absent on a host older than the speed contract; 1 keeps the
+      // platter at 33 and the strobe frozen, which is what those hosts do.
+      rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;
       // The pressing is the only expensive work, and `queueRevision` is the only
       // thing that can invalidate it (a resize forces it by clearing this).
       if (state.queueRevision !== lastRevision) {
@@ -316,15 +626,80 @@ export function createVinylDeckVisualizer(): PluginVisualizer {
         const r = positionToRadius(bands, idx, state.positionSecs, geo);
         arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
       }
-      // The cue lever lifts the arm on pause; the platter never stops.
-      deck.classList.toggle("lifted", !state.playing);
+      // Playback STARTING means the motor is running, however it was started (the
+      // lever, the spacebar, the now-playing bar). Keeps this deck's one piece of
+      // local state from ever contradicting the host.
+      //
+      // On the RISING EDGE, not the level, and that distinction is the whole bug
+      // this once had. `setPlaying` is asynchronous from here: the host has to
+      // re-render before `state.playing` flips, and frame() keeps running at
+      // display rate meanwhile. Those in-between frames still report playing, so a
+      // level check wiped the flag before the pause it was set for ever arrived —
+      // and START/STOP silently degraded into a second cue lever, arm up and
+      // platter still turning.
+      if (state.playing && !wasPlaying) motorStopped = false;
+      wasPlaying = state.playing;
+
+      // The ARM lifts for a cue-lever pause, and only then. A stopped platter
+      // leaves the needle in the groove, which is exactly what a real deck does
+      // and is the whole visual difference between the two controls.
+      deck.classList.toggle("lifted", !state.playing && !motorStopped);
+      deck.classList.toggle("motor-off", motorStopped);
+
+      // Which speed is lit — and where the fader sits — both come from the HOST's
+      // rate, decomposed. The deck keeps no memory of which button was pressed,
+      // so a speed changed in Settings can't leave these describing something
+      // that isn't playing. Both lit = 78, exactly how the real deck shows it.
+      const pitchState = decomposeRate(rate);
+      if (s33) s33.classList.toggle("on", pitchState.basis === 1);
+      if (s45) s45.classList.toggle("on", pitchState.basis !== 1);
+      // Not while the hand owns it — same rule as the tonearm.
+      if (!scrubbingPitch) showPitch(pitchState.percent);
+      deck.classList.toggle("off-speed", Math.abs(pitchState.percent) > 0.05);
 
       // A real platter turns whether or not it's playing. The app's global
       // reduced-motion CSS guard can't cross a shadow boundary, and could never
       // reach a JS-driven rotation, so honour the flag here.
       if (!host.reducedMotion) {
-        spin.style.transform = `rotate(${((state.timeMs / 1800) * 360) % 360}deg)`;
+        // Integrate rather than derive from timeMs, so a speed change
+        // accelerates the platter instead of teleporting it. dt is clamped
+        // because the host stops calling frame() off-screen, and the first tick
+        // back would otherwise spin the record through a huge angle at once.
+        const dt = lastMs === null ? 0 : Math.max(0, Math.min(250, state.timeMs - lastMs));
+
+        // Ease toward the target speed rather than jumping to it: a direct-drive
+        // platter reaches speed in well under a turn and brakes harder still,
+        // which is the SL-1200's party trick and the thing that makes START/STOP
+        // read as a motor rather than as a second cue lever.
+        const target = motorStopped ? 0 : rate;
+        const tau = target === 0 ? BRAKE_TAU_MS : SPINUP_TAU_MS;
+        spinVel += (target - spinVel) * (1 - Math.exp(-dt / tau));
+        if (Math.abs(target - spinVel) < 0.001) spinVel = target;
+
+        spinAngle = (spinAngle + (dt / 1800) * 360 * spinVel) % 360;
+        spin.style.transform = `rotate(${spinAngle}deg)`;
+
+        // THE STROBE ILLUSION, which is the honest readout of the rate.
+        //
+        // On a real deck a mains-frequency lamp flashes on the platter's dots, so
+        // they look frozen at the correct speed and crawl when it's off. Drifting
+        // them by (rate - 1) reproduces exactly that: still at 33, creeping
+        // forward at 45, backwards below. It's also why the dots are their own
+        // element and not inside .spin — they must not simply turn with the
+        // record.
+        if (dots) {
+          // Drift is (actual speed − the speed the dot ring is cut for), so the
+          // ring holds still at 33 and crawls off it. A STOPPED platter's dots
+          // don't move at all — they're painted on it — so the reference drops to
+          // zero once the motor is off, and the ring sails to a halt with the
+          // record. (A real strobe aliases, freezing again at exact multiples;
+          // not modelled, because nothing near 33 ever sees it.)
+          const reference = spinVel > 0.05 ? 1 : 0;
+          dotAngle = (dotAngle + (dt / 1800) * 360 * (spinVel - reference)) % 360;
+          dots.style.transform = `rotate(${dotAngle}deg)`;
+        }
       }
+      lastMs = state.timeMs;
     },
 
     destroy() {

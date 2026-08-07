@@ -29,13 +29,18 @@ var __viboplrPlugin = (function(exports) {
 	* that the last band ends exactly on the run-out.
 	*/
 	var MAX_GAP_SHARE = .5;
-	/** Tonearm mounting, as multiples of the disc radius. */
+	/**
+	* The default mount: compressed on purpose.
+	*
+	* A real SL-1200 sits its pivot at 1.42·rEdge with a 1.52·rEdge effective length
+	* (215mm and 230mm against a 151mm record). Those don't fit a deck whose disc is
+	* *inscribed* in its box — the pivot would land outside it — so the plain deck
+	* pulls both in. A skin that shrinks the platter to make room for a plinth can
+	* afford the true numbers; see skins.ts.
+	*/
 	var ARM = {
-		/** Where the pivot sits, measured from the disc centre. Negative = above. */
 		pivotAngleDeg: -38,
-		/** Pivot distance from centre. >1 puts it clear of the record. */
 		pivotDistance: 1.12,
-		/** Effective arm length, pivot to stylus. */
 		length: 1.28
 	};
 	/** Build the radii for a deck rendered `size` px across. */
@@ -143,13 +148,13 @@ var __viboplrPlugin = (function(exports) {
 	function clampToProgram(r, geo) {
 		return Math.max(geo.rProgIn, Math.min(geo.rLeadIn, r));
 	}
-	function buildArmMount(geo) {
-		const ang = ARM.pivotAngleDeg * Math.PI / 180;
-		const distance = geo.rEdge * ARM.pivotDistance;
+	function buildArmMount(geo, spec = ARM) {
+		const ang = spec.pivotAngleDeg * Math.PI / 180;
+		const distance = geo.rEdge * spec.pivotDistance;
 		return {
 			px: geo.cx + distance * Math.cos(ang),
 			py: geo.cy + distance * Math.sin(ang),
-			length: geo.rEdge * ARM.length,
+			length: geo.rEdge * spec.length,
 			distance
 		};
 	}
@@ -252,7 +257,13 @@ var __viboplrPlugin = (function(exports) {
   --vinyl-body: color-mix(in srgb, var(--bg-primary) 26%, #000);
   --vinyl-body-hi: color-mix(in srgb, var(--bg-primary) 46%, #000);
   --vinyl-sheen: #fff;
-  --k: 1; /* deck size / 368 reference — see repress() */
+  --k: 1; /* record size / 368 reference — see repress() */
+  /* Plinth box and its own 368 reference. Defaulted so a livery's furniture has
+     something sane to lay out against on the frame between mount() and the first
+     repress(), rather than collapsing to auto. */
+  --plinth-w: 100%;
+  --plinth-h: 100%;
+  --pk: 1;
   position: absolute;
   inset: 0;
   display: flex;
@@ -541,21 +552,646 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   transition: transform .24s cubic-bezier(.34,1.5,.6,1);
 }
 .lifted .shadow { opacity: 1; }
+
+/* ===================================================================
+   SL-1200 livery
+   ===================================================================
+   Scoped to .skin-sl1200 throughout, so it costs the plain deck nothing but
+   bytes.
+
+   THIS SKIN NAMES ITS OWN COLOURS, and is the one deliberate exception to the
+   plugin's skin-token rule. The rest of the deck derives every colour from the
+   app's skin so it cannot clash with one; a silver direct-drive deck is a
+   depiction of a specific object, and a "brushed aluminium" that turned lilac
+   under a purple skin would be a worse outcome than ignoring the skin. The
+   CANVAS is untouched — grooves are still painted in alpha only, so the record
+   itself still cannot break anything.
+
+   GEOMETRY. The plinth is landscape (1.19:1, from the reference photo's 535x450)
+   and takes the slot's short side as its WIDTH. Forcing it square was the first
+   attempt and it put the record on top of the bottom-left controls. Percentages
+   below are read straight off that photo: left/width against the plinth's width,
+   top/height against its height. Circles use aspect-ratio so a single width
+   percentage cannot skew them.
+
+   SIZES use --pk (plinth/368), not --k (record/368). The record is deliberately
+   smaller here to make room for the furniture, and scaling the furniture by the
+   record would undo exactly the room it was given.
+
+   NO BACKTICKS anywhere below — the whole sheet is one template literal. */
+
+.skin-sl1200 {
+  /* A record is black on any deck, so stop deriving the vinyl from the skin. */
+  --vinyl-body: #17181b;
+  --vinyl-body-hi: #25272c;
+  --mk7-silver: #c4c7c9;
+  --mk7-silver-hi: #eaecee;
+  --mk7-silver-lo: #9a9ea2;
+  --mk7-chrome-hi: #f6f8fa;
+  --mk7-chrome-lo: #7d8186;
+  --mk7-ink: #33363b;
+  --mk7-red: #d22b28;
+}
+
+/* The plinth: brushed aluminium with a fine vertical grain. Centred on the same
+   point as the platter, so the photo's x-fractions transfer directly — the
+   platter's centre lands at 50% - 11% = 39% of the width, which is where it sits
+   on the real deck. Pointer-transparent; only START/STOP re-enables itself. */
+.skin-sl1200 .plinth {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--plinth-w);
+  height: var(--plinth-h);
+  transform: translate(-50%, -50%);
+  border-radius: calc(9px * var(--pk));
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(255,255,255,.05) 0 1px, rgba(0,0,0,.035) 1px 3px),
+    linear-gradient(160deg, var(--mk7-silver-hi) 0%, var(--mk7-silver) 45%,
+      var(--mk7-silver-lo) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.75),
+    inset 0 calc(-2px * var(--pk)) calc(5px * var(--pk)) rgba(0,0,0,.2),
+    0 calc(12px * var(--pk)) calc(30px * var(--pk)) rgba(0,0,0,.5);
+}
+
+/* Platter rim and its stroboscope dots.
+   A 302mm record on a 332mm platter leaves ~10% of platter showing, which is
+   where the dots live. Sits inside .platter at a negative inset so it inherits
+   the disc's box and offset for free. */
+.skin-sl1200 .rim {
+  position: absolute;
+  inset: -6.5%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle at 36% 28%,
+    var(--mk7-silver-hi), var(--mk7-silver) 55%, var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3),
+              0 calc(4px * var(--pk)) calc(10px * var(--pk)) rgba(0,0,0,.4);
+}
+/* The dots: a dashed ring in the band of rim the record leaves visible. Sized in
+   degrees, so they stay round-ish at any deck size.
+   Its own element, not a pseudo, because JS rotates it independently of the
+   platter to reproduce the strobe illusion (see frame()). */
+.skin-sl1200 .rim .dots {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  will-change: transform;
+  background: repeating-conic-gradient(from 0deg,
+    #16181c 0deg 1.3deg, transparent 1.3deg 4.2deg);
+  -webkit-mask: radial-gradient(circle, transparent 88.5%, #000 90%, #000 97%, transparent 98.5%);
+  mask: radial-gradient(circle, transparent 88.5%, #000 90%, #000 97%, transparent 98.5%);
+}
+
+/* The record's own drop shadow is a big soft one, right for a disc floating on
+   black and wrong here — it washed straight over the rim and swallowed the strobe
+   dots. On a deck the record is SEATED on the platter, so it gets a tight contact
+   shadow and the rim keeps the soft one. */
+.skin-sl1200 .body {
+  box-shadow: 0 calc(2px * var(--pk)) calc(5px * var(--pk)) -1px rgba(0,0,0,.55);
+}
+
+/* 45rpm adaptor well, top-left. */
+.skin-sl1200 .adaptor {
+  position: absolute;
+  left: 2.8%; top: 7.6%; width: 10.4%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%,
+    var(--mk7-chrome-hi), var(--mk7-silver) 50%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32),
+              inset 0 calc(2px * var(--pk)) calc(3px * var(--pk)) rgba(255,255,255,.55);
+}
+.skin-sl1200 .adaptor::after {
+  content: "";
+  position: absolute; inset: 32%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--mk7-silver-lo), var(--mk7-silver));
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.5);
+}
+
+/* Pop-up target light. */
+.skin-sl1200 .target {
+  position: absolute;
+  left: 68.8%; top: 9.6%; width: 4.4%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 34%, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.38);
+}
+
+/* Power rotary, bottom-left. */
+.skin-sl1200 .power {
+  position: absolute;
+  left: 0.9%; top: 73.5%; width: 7.6%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 30%,
+    var(--mk7-chrome-hi), var(--mk7-silver-lo) 68%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.42),
+              0 calc(1px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.45);
+}
+.skin-sl1200 .power::after {
+  content: "";
+  position: absolute; left: 45%; top: 10%; width: 10%; height: 42%;
+  border-radius: 1px;
+  background: var(--mk7-ink);
+}
+
+/* Strobe lamp. Lit while the platter is driven, dimmed when the arm is up — the
+   one piece of furniture that reads playback, because on the real deck it is the
+   thing that tells you the platter is running. */
+.skin-sl1200 .strobe {
+  position: absolute;
+  /* Further out and lower than the photo's 8.4%/75%. The platter's circle has
+     receded by this height, but only just — at the photo's spot the rim clipped
+     the lamp's inner corner, because this plinth is squarer than the real one and
+     the disc reaches further left at the bottom. */
+  left: 6.8%; top: 79%; width: 3.6%; height: 4.6%;
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, #ff5b52, var(--mk7-red) 45%, #8e1b19);
+  box-shadow: 0 0 calc(9px * var(--pk)) rgba(210,43,40,.8),
+              inset 0 1px 1px rgba(255,255,255,.5);
+  transition: opacity .3s ease, box-shadow .3s ease;
+}
+/* Dims with the MOTOR, not with the arm. The lamp exists to light the dots so you
+   can read the platter's speed — a stopped platter has no speed to read, while a
+   cued-up one (arm raised, platter spinning) still does. Tying this to the lifted
+   state had it going dark at exactly the moment it was still useful. */
+.skin-sl1200.motor-off .strobe {
+  opacity: .28;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.2);
+}
+
+/* START/STOP. The only control here that does anything, and it drives the same
+   action the cue lever does — on the real deck it is the primary transport, so
+   leaving it decorative beside a working lever would be the odd choice. */
+.skin-sl1200 .start {
+  position: absolute;
+  left: 1.3%; top: 85%; width: 11%; height: 8.4%;
+  padding: 0;
+  border: none;
+  border-radius: calc(2px * var(--pk));
+  /* Nearly flat and LIGHTER than the plinth, with a thin dark outline — the real
+     button is a pale slab, not the chunky gradient cap this used to be. Its whole
+     presence on the deck comes from being brighter than the aluminium around it,
+     so the heavy top-highlight-to-dark-bottom ramp read as the wrong object. */
+  background: linear-gradient(180deg, #f2f4f6, #e4e6e9);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
+              inset 0 1px 0 rgba(255,255,255,.9),
+              0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.25);
+  color: var(--mk7-ink);
+  /* Small, wide-tracked and low-contrast: on the real button the legend is a
+     quiet caption, not a label filling the face. */
+  font: 500 calc(4.2px * var(--pk))/1 system-ui, sans-serif;
+  letter-spacing: .1em;
+  opacity: .96;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.skin-sl1200 .start:hover { filter: brightness(1.03); }
+.skin-sl1200 .start:active {
+  background: linear-gradient(180deg, #dcdee1, #eceef0);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
+              inset 0 calc(1.5px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.3);
+}
+/* The recessed well the button sits in. */
+.skin-sl1200 .start::before {
+  content: "";
+  position: absolute;
+  inset: calc(-2px * var(--pk));
+  border-radius: calc(3px * var(--pk));
+  box-shadow: inset 0 1px calc(2px * var(--pk)) rgba(0,0,0,.28);
+  pointer-events: none;
+}
+
+/* 33 / 45. Real buttons now that the contract carries a rate — they ask the host
+   for 1x and 1.35x, and the lit one is driven by the host's rate rather than by
+   their own clicks, so they stay right when it's changed from Settings. Both lit
+   is 78, exactly how the real deck shows it. */
+.skin-sl1200 .speeds {
+  position: absolute;
+  /* 13.4%, not the photo's 12.1%: START/STOP ends at 12.3% and the two were
+     touching, which their shadows turned into an apparent overlap. On the real
+     deck there is daylight between them. */
+  left: 13.4%; top: 90.5%; width: 12.5%; height: 4.6%;
+  display: flex;
+  gap: 6%;
+  pointer-events: auto;
+}
+.skin-sl1200 .speeds button {
+  flex: 1;
+  padding: 0;
+  border: none;
+  border-radius: calc(1.5px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.28);
+  color: var(--mk7-ink);
+  font: 600 calc(4.5px * var(--pk))/1 system-ui, sans-serif;
+  cursor: pointer;
+  transition: background .18s ease, box-shadow .18s ease, color .18s ease;
+}
+.skin-sl1200 .speeds button:hover { filter: brightness(1.06); }
+.skin-sl1200 .speeds button:active { filter: brightness(.92); }
+.skin-sl1200 .speeds button.on {
+  background: linear-gradient(180deg, #ff6a60, var(--mk7-red));
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3), 0 0 calc(6px * var(--pk)) rgba(210,43,40,.6);
+}
+
+/* Pitch fader. A real control now that the contract carries a rate: it trims the
+   selected speed by up to +/-8%, the SL-1200's default range.
+   The --travel property is 0 at the top of the slot and 1 at the bottom, written
+   by frame() from the host's rate (and by the drag while the hand owns it). */
+.skin-sl1200 .pitch {
+  --travel: .5;
+  position: absolute;
+  left: 91.6%; top: 52.2%; width: 3.7%; height: 33.3%;
+  border-radius: calc(3px * var(--pk));
+  background: linear-gradient(180deg, #b4b7ba, #d6d8da);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32),
+              inset 0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.3);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.skin-sl1200 .pitch:active { cursor: grabbing; }
+
+/* The +/- marks. Minus at the top, plus at the bottom: on a Technics you push the
+   fader away from you to slow the record down, and that is the one thing about
+   this control nobody can guess from its shape. */
+.skin-sl1200 .pmark {
+  position: absolute;
+  left: 115%;
+  color: var(--mk7-ink);
+  opacity: .6;
+  font: 600 calc(6px * var(--pk))/1 system-ui, sans-serif;
+  pointer-events: none;
+}
+.skin-sl1200 .pminus { top: calc(-2px * var(--pk)); }
+.skin-sl1200 .pplus { bottom: calc(-2px * var(--pk)); }
+
+/* Live readout, under the fader. Blank at 0 — a deck at its quartz-locked speed
+   doesn't announce itself, and a permanent "0.0%" would be noise. */
+.skin-sl1200 .pval {
+  position: absolute;
+  left: 84%; top: 86.5%; width: 16%;
+  text-align: center;
+  color: var(--mk7-ink);
+  opacity: 0;
+  font: 600 calc(5px * var(--pk))/1 system-ui, sans-serif;
+  pointer-events: none;
+  transition: opacity .2s ease;
+}
+.skin-sl1200.off-speed .pval { opacity: .85; color: var(--mk7-red); }
+.skin-sl1200 .pitch::before {
+  content: "";
+  position: absolute;
+  left: 40%; top: 5%; width: 20%; height: 90%;
+  border-radius: calc(2px * var(--pk));
+  background: #494d51;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.75);
+}
+/* The knob. Rides the slot from --travel, with its own height taken out of the
+   range so it can't hang off either end. No transition: a fader has to track the
+   hand exactly, and easing here reads as lag (same reason the tonearm drops its
+   transition mid-drag). */
+.skin-sl1200 .pitch i {
+  position: absolute;
+  left: -42%; right: -42%;
+  top: calc(var(--travel) * (100% - 11%));
+  height: 11%;
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 45%, var(--mk7-chrome-lo));
+  box-shadow: 0 calc(1px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.55),
+              inset 0 1px 1px rgba(255,255,255,.95);
+  pointer-events: none;
+}
+.skin-sl1200 .pitch i::after {
+  content: "";
+  position: absolute; left: 8%; right: 8%; top: 42%; height: 16%;
+  background: var(--mk7-red);
+  border-radius: 1px;
+}
+
+/* RESET — the quartz lock. Snaps back to exactly the selected speed however far
+   the fader has been pushed, keeping the 33/45 choice. Lights while off-speed,
+   so there is always something visibly offering the way back. */
+.skin-sl1200 .reset {
+  position: absolute;
+  /* Right of the arm rest, not under it: at the photo's 83.2% the two boxes
+     overlapped, which read as one broken control rather than two. */
+  left: 86.6%; top: 81.5%; width: 3.4%; height: 3.4%;
+  padding: 0;
+  border: none;
+  border-radius: calc(1.5px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background .2s ease, box-shadow .2s ease;
+}
+.skin-sl1200 .reset:hover { filter: brightness(1.08); }
+.skin-sl1200.off-speed .reset {
+  background: linear-gradient(180deg, #ff6a60, var(--mk7-red));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3), 0 0 calc(5px * var(--pk)) rgba(210,43,40,.55);
+}
+
+/* Tonearm rest, below where the arm parks. */
+.skin-sl1200 .rest {
+  position: absolute;
+  left: 82.2%; top: 77.8%; width: 2.4%; height: 5.5%;
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.38);
+}
+
+/* Cast foot at the bottom edge. */
+.skin-sl1200 .foot {
+  position: absolute;
+  left: 55.5%; top: 92%; width: 3.2%; aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32);
+}
+
+/* Model line, bottom centre.
+   Deliberately NOT the manufacturer's wordmark: reproducing a trademark in a
+   shipped plugin is a different decision from imitating a shape, and this line
+   costs nothing to keep generic. */
+.skin-sl1200 .brand {
+  position: absolute;
+  left: 58%; top: 88%; width: 30%;
+  text-align: center;
+  color: var(--mk7-ink);
+  opacity: .5;
+  font: 500 calc(4.5px * var(--pk))/1.4 system-ui, sans-serif;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+}
+
+/* --- the arm, in silver --- */
+
+/* The straight tube gives way to an S. */
+.skin-sl1200 .tube { display: none; }
+.skin-sl1200 .sarm {
+  position: absolute;
+  left: 0; right: 0;
+  top: calc(-15px * var(--pk));
+  height: calc(30px * var(--pk));
+  overflow: visible;
+}
+/* preserveAspectRatio="none" stretches the viewBox to the arm's real length, so
+   the stroke has to opt out of that scaling or it thins to a hair. Drawn twice:
+   a dark under-stroke for the tube's shaded underside, then the bright one. */
+.skin-sl1200 .sarm path {
+  fill: none;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.skin-sl1200 .sarm .under {
+  stroke: rgba(0,0,0,.5);
+  stroke-width: calc(10.5px * var(--pk));
+}
+.skin-sl1200 .sarm .over {
+  stroke: url(#armgrad);
+  stroke-width: calc(7.5px * var(--pk));
+}
+
+/* Gimbal: three concentric silver rings, so the base reads as a mechanism rather
+   than a dot. */
+.skin-sl1200 .pivot {
+  left: calc(-21px * var(--pk)); top: calc(-21px * var(--pk));
+  width: calc(42px * var(--pk)); height: calc(42px * var(--pk));
+  background: radial-gradient(circle at 34% 28%,
+    var(--mk7-chrome-hi), var(--mk7-silver) 42%, var(--mk7-chrome-lo) 100%);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.42),
+              0 calc(3px * var(--pk)) calc(7px * var(--pk)) rgba(0,0,0,.45);
+}
+.skin-sl1200 .pivot::after {
+  inset: calc(8px * var(--pk));
+  background: radial-gradient(circle at 38% 32%, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32);
+}
+.skin-sl1200 .pivot::before {
+  content: "";
+  position: absolute;
+  inset: calc(15px * var(--pk));
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 34%, var(--mk7-chrome-hi), var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.36);
+  z-index: 1;
+}
+/* Counterweight, on its stub behind the pivot. */
+/* Counterweight. Needs a hard edge and a darker underside or it dissolves into
+   the plinth, which is the same silver — the first pass read as a white smudge. */
+.skin-sl1200 .counter {
+  left: calc(-58px * var(--pk)); top: calc(-10px * var(--pk));
+  width: calc(36px * var(--pk)); height: calc(20px * var(--pk));
+  border-radius: calc(4px * var(--pk));
+  background: linear-gradient(180deg,
+    var(--mk7-chrome-hi) 0%, var(--mk7-silver) 32%, #6f7378 88%, #55585c 100%);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.9),
+              0 0 0 1px rgba(0,0,0,.45),
+              0 calc(3px * var(--pk)) calc(6px * var(--pk)) rgba(0,0,0,.5);
+}
+/* Knurling, so it reads as the thing you turn to balance the arm. */
+.skin-sl1200 .counter::before {
+  content: "";
+  position: absolute;
+  inset: 22% 12%;
+  border-radius: calc(2px * var(--pk));
+  background: repeating-linear-gradient(90deg,
+    rgba(0,0,0,.22) 0 1px, rgba(255,255,255,.28) 1px calc(3px * var(--pk)));
+  opacity: .5;
+}
+.skin-sl1200 .counter::after {
+  content: "";
+  position: absolute;
+  right: calc(-14px * var(--pk)); top: 42%;
+  width: calc(16px * var(--pk)); height: 16%;
+  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  border-radius: 1px;
+}
+
+/* Headshell: a squarer silver block with a finger lift. */
+.skin-sl1200 .head {
+  width: calc(34px * var(--pk)); height: calc(19px * var(--pk));
+  top: calc(-9.5px * var(--pk));
+  border-radius: calc(2px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 46%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.95),
+              0 0 0 1px rgba(0,0,0,.48),
+              0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.4);
+}
+.skin-sl1200 .head::before {
+  content: "";
+  position: absolute;
+  left: calc(-9px * var(--pk)); top: 34%;
+  width: calc(11px * var(--pk)); height: calc(3px * var(--pk));
+  border-radius: calc(1.5px * var(--pk));
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
+  box-shadow: 0 1px 1px rgba(0,0,0,.4);
+}
+/* Cartridge stays at the arm's far end — armAngleDeg solves for the stylus being
+   exactly there, so this must not drift back along the headshell. */
+.skin-sl1200 .head::after {
+  right: calc(-1px * var(--pk));
+  width: calc(9px * var(--pk));
+  height: calc(12px * var(--pk));
+  background: linear-gradient(180deg, #2f343b, #b6bbc2);
+}
+
+/* NOTE: "lifted" lands on .deck itself, so these are compound selectors, not
+   descendant ones — the arm's own parts are what brighten. */
+.skin-sl1200.lifted .head,
+.skin-sl1200.lifted .sarm .over { filter: brightness(1.15); }
 `;
+	//#endregion
+	//#region src/skins.ts
+	/**
+	* The original: a record on black, and nothing that isn't the record or the arm.
+	*/
+	var STUDIO = {
+		name: "studio",
+		aspect: 1,
+		platterScale: 1,
+		offsetX: 0,
+		offsetY: 0,
+		arm: ARM,
+		furniture: false
+	};
+	var SKINS = {
+		studio: STUDIO,
+		sl1200: {
+			name: "sl1200",
+			aspect: 1.19,
+			platterScale: .64,
+			offsetX: -.11,
+			offsetY: 0,
+			arm: {
+				pivotAngleDeg: -23,
+				pivotDistance: 1.42,
+				length: 1.52
+			},
+			furniture: true,
+			leverAt: {
+				x: .905,
+				y: .47
+			}
+		}
+	};
+	/** Unknown names fall back to the plain deck rather than rendering nothing. */
+	function skinConfig(skin) {
+		return SKINS[skin] ?? STUDIO;
+	}
+	/** 45 and 78 expressed against a 33⅓ pressing. */
+	var RATE_45 = 45 / (100 / 3);
+	/**
+	* The speeds a rate can be sitting on.
+	*
+	* Their ±8% windows do not overlap — 33 reaches 1.08, 45 starts at 1.242 — so a
+	* rate maps back to exactly one (speed, trim) pair. At the real deck's *other*
+	* range, ±16%, they would just touch (1.16 vs 1.134), and the deck would have to
+	* remember which button you pressed instead of deriving it. Modelling ±8% only is
+	* what buys the stateless design.
+	*/
+	var BASES = [
+		1,
+		RATE_45,
+		78 / (100 / 3)
+	];
+	/** Split a playback rate into the speed it sits on and the trim off it. */
+	function decomposeRate(rate) {
+		const safe = Number.isFinite(rate) && rate > 0 ? rate : 1;
+		let best = {
+			basis: 1,
+			percent: 0
+		};
+		let bestErr = Infinity;
+		for (const basis of BASES) {
+			const percent = (safe / basis - 1) * 100;
+			if (Math.abs(percent) < bestErr) {
+				bestErr = Math.abs(percent);
+				best = {
+					basis,
+					percent
+				};
+			}
+		}
+		return best;
+	}
+	/** Recombine a speed and a trim into the rate to ask the host for. */
+	function composeRate(basis, percent) {
+		return basis * (1 + clampPercent(percent) / 100);
+	}
+	function clampPercent(percent) {
+		if (!Number.isFinite(percent)) return 0;
+		return Math.max(-8, Math.min(8, percent));
+	}
+	/**
+	* Knob travel (0 = top of the slot, 1 = bottom) for a trim.
+	*
+	* DOWN IS FASTER, which is the Technics convention: the + marks are at the front
+	* of the deck, nearest the user, and you push the fader away to slow the record
+	* down. The +/- marks beside the slot say so on screen, since it is the one thing
+	* here nobody can guess from the shape.
+	*/
+	function percentToTravel(percent) {
+		return .5 + clampPercent(percent) / 16;
+	}
+	/** Inverse of `percentToTravel`, with the centre detent a real fader has. */
+	function travelToPercent(travel) {
+		const percent = (Math.max(0, Math.min(1, travel)) - .5) * 8 * 2;
+		return Math.abs(percent) < .35 ? 0 : percent;
+	}
+	/** Fader label, e.g. "+3.2%" / "0.0%". */
+	function formatPercent(percent) {
+		const p = clampPercent(percent);
+		return `${p > 0 ? "+" : p < 0 ? "−" : ""}${Math.abs(p).toFixed(1)}%`;
+	}
 	//#endregion
 	//#region src/visualizer.ts
 	/**
-	* The deck has no options.
+	* Platter spin-up and braking time constants, ms.
 	*
-	* It used to carry three — a crop, a platter tilt and a gap outline — and a
-	* settings panel to drive them. They are gone on purpose: every one of them was
-	* a way to make the deck look like something other than a record, two of them
-	* cost accuracy (the tilt makes cueing read the radius off a projection, the
-	* crop mirrors the arm), and none answered a question a listener actually has.
-	* A real deck has a cue lever and a tonearm, so this one has a cue lever and a
-	* tonearm. Nothing to configure means nothing to get wrong.
+	* The SL-1200's headline spec is reaching 33⅓ in a third of a turn, and its
+	* electronic brake stops it faster still. Exponential easing, so these are ~63%
+	* marks: 220ms reaches speed in about half a second, 110ms stops it in a quarter.
 	*/
-	function createVinylDeckVisualizer() {
+	var SPINUP_TAU_MS = 220;
+	var BRAKE_TAU_MS = 110;
+	/** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
+	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><div class=\"strobe\"></div><button class=\"start\" type=\"button\">START&#183;STOP</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\">Direct Drive</div></div>";
+	/**
+	* The S-shaped arm tube.
+	*
+	* Endpoints are load-bearing: the path starts at the pivot (0,13) and ends at the
+	* stylus (100,13), so however the bend is drawn the straight-line distance the
+	* geometry solves for is unchanged. `preserveAspectRatio="none"` stretches the
+	* viewBox to the arm's real length, which is why the stroke opts out of scaling.
+	*/
+	var SARM_SVG = "<svg class=\"sarm\" viewBox=\"0 0 100 26\" preserveAspectRatio=\"none\" aria-hidden=\"true\"><defs><linearGradient id=\"armgrad\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#f4f6f8\"/><stop offset=\".5\" stop-color=\"#c9cbcd\"/><stop offset=\"1\" stop-color=\"#82868b\"/></linearGradient></defs><path class=\"under\" d=\"M0,13 C20,13 30,7 52,7 C74,7 80,17 100,13\"/><path class=\"over\" d=\"M0,13 C20,13 30,7 52,7 C74,7 80,17 100,13\"/></svg>";
+	/**
+	* The deck, in one of its liveries.
+	*
+	* `skin` is NOT a setting — each livery is contributed to the host as its own
+	* visualizer, so the user picks one from the visualizer picker and this value is
+	* fixed for the instance's whole life. That is deliberate: 1.0.1 removed every
+	* option and the settings panel with them, and this adds a second deck without
+	* bringing any of that back. There is still nothing to configure, no stored
+	* preference, and no options object mutated behind a running instance.
+	*
+	* What each skin may change is presentation and *mounting* — the plinth, the
+	* colours, where the platter sits, how long the arm is. What it must not change
+	* is the record: the pressing, the groove painting and the cue maths are shared,
+	* so both decks agree about where a track is.
+	*/
+	function createVinylDeckVisualizer(skin = "studio") {
+		const cfg = skinConfig(skin);
 		let host;
 		let root;
 		let deck;
@@ -565,9 +1201,57 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let label;
 		let arm;
 		let lever;
+		let dots = null;
+		let s33 = null;
+		let s45 = null;
+		let pitch = null;
+		let pval = null;
+		/**
+		* True while the pitch fader is under the hand.
+		*
+		* Same reason as `dragging` on the tonearm: frame() positions the knob from the
+		* host's rate, and the host doesn't know about the drag until we send it, so a
+		* frame landing mid-gesture would yank the knob back under the cursor.
+		*/
+		let scrubbingPitch = false;
+		/**
+		* Platter angle, ACCUMULATED rather than derived from timeMs.
+		*
+		* `(timeMs / 1800) * 360` is fine at a fixed speed, but multiplying it by the
+		* rate makes the whole history rescale, so the record visibly jumps the instant
+		* the speed changes. Integrating the delta keeps the picture continuous through
+		* a 33 → 45 press, which is what a real platter does — it accelerates, it does
+		* not teleport.
+		*/
+		let spinAngle = 0;
+		/** Strobe-dot angle, integrated the same way. See frame(). */
+		let dotAngle = 0;
+		let lastMs = null;
 		/** Last `playing` seen in frame(). The lever states the value it wants rather
 		*  than toggling, per the contract, so it has to know the current one. */
 		let playing = false;
+		/** Last `rate` seen in frame(). Drives the platter's speed, the strobe drift
+		*  and which speed button is lit. */
+		let rate = 1;
+		/**
+		* Whether the MOTOR is off, as distinct from the music being paused.
+		*
+		* A deck has two independent mechanisms that both stop the sound, and they look
+		* nothing alike: START/STOP cuts the platter and leaves the arm down, while the
+		* cue lever lifts the arm and leaves the platter spinning. The host has only one
+		* `playing` flag, so which of the two we're depicting is genuinely this deck's
+		* own state — the one thing here worth remembering locally.
+		*
+		* Self-correcting: any frame that reports playback clears it, because sound
+		* means the platter must be turning however it was started.
+		*/
+		let motorStopped = false;
+		/** Previous frame's `playing`, so the motor flag can be cleared on the rising
+		*  edge rather than the level. See frame(). */
+		let wasPlaying = false;
+		/** Platter speed, eased toward its target so the deck spins up and brakes
+		*  instead of snapping. In units where 1 is 33⅓. */
+		let spinVel = 1;
 		/**
 		* True between pointerdown and pointerup on the headshell.
 		*
@@ -595,9 +1279,16 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		/** Lay out and repaint. Called on a queue or size change — never per frame. */
 		function repress(tracks) {
 			const durations = tracks.map((t) => t.durationSecs);
-			geo = buildGeometry(Math.max(40, Math.min(size.width, size.height)));
-			mountPoint = buildArmMount(geo);
+			const box = Math.max(40, Math.min(size.width, size.height));
+			const plinthW = box;
+			const plinthH = box / cfg.aspect;
+			geo = buildGeometry(Math.max(40, plinthW * cfg.platterScale));
+			mountPoint = buildArmMount(geo, cfg.arm);
 			bands = layoutBands(durations, geo);
+			deck.style.setProperty("--plinth-w", `${plinthW}px`);
+			deck.style.setProperty("--plinth-h", `${plinthH}px`);
+			deck.style.setProperty("--pk", String(plinthW / 368));
+			if (cfg.offsetX || cfg.offsetY) platter.style.transform = `translate(${cfg.offsetX * plinthW}px, ${cfg.offsetY * plinthH}px)`;
 			platter.style.width = `${geo.size}px`;
 			platter.style.height = `${geo.size}px`;
 			canvas.style.width = `${geo.size}px`;
@@ -611,10 +1302,17 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const k = geo.size / 368;
 			const leverW = 11 * k;
 			const leverH = 22 * k;
-			const diagonal = geo.rEdge * 1.2 * Math.SQRT1_2;
-			const inset = 6 * k;
-			lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
-			lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
+			if (cfg.leverAt) {
+				const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
+				const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
+				lever.style.left = `${cfg.leverAt.x * plinthW - platterLeft - leverW / 2}px`;
+				lever.style.top = `${cfg.leverAt.y * plinthH - platterTop - leverH / 2}px`;
+			} else {
+				const diagonal = geo.rEdge * 1.2 * Math.SQRT1_2;
+				const inset = 6 * k;
+				lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
+				lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
+			}
 			paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
 		}
 		/**
@@ -679,6 +1377,81 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			target.addEventListener("pointerup", up);
 			target.addEventListener("pointercancel", up);
 		}
+		/**
+		* Ask for the opposite of what we were last shown. Shared by the cue lever and
+		* START/STOP.
+		*
+		* States the value rather than toggling, per the contract — a visualizer renders
+		* from a snapshot that may be a frame stale, and a toggle read against a stale
+		* snapshot inverts. The `typeof` guard keeps an older host without the action
+		* degrading to the decorative controls it had before, instead of throwing on
+		* every click.
+		*/
+		function toggleTransport() {
+			if (typeof host.actions.setPlaying !== "function") return;
+			host.actions.setPlaying(!playing);
+		}
+		/**
+		* Ask the host for a playback rate.
+		*
+		* Guarded like `setPlaying`: a host older than the speed contract has no
+		* `setRate`, and there the buttons stay decorative rather than throwing. The
+		* host clamps whatever we send and owns the only route back to normal, so this
+		* plugin never has to be the thing standing between a user and 1x.
+		*/
+		function setRate(r) {
+			if (typeof host.actions.setRate !== "function") return;
+			host.actions.setRate(r);
+		}
+		/** Paint the fader knob and its readout for a trim, without asking the host. */
+		function showPitch(percent) {
+			if (pitch) pitch.style.setProperty("--travel", String(percentToTravel(percent)));
+			if (pval) pval.textContent = formatPercent(percent);
+		}
+		/**
+		* Drag the pitch fader.
+		*
+		* Sends on every move rather than on release, because a pitch fader is a
+		* continuous control — hearing the record bend as you push it IS the feature,
+		* and a value that only landed on mouse-up would be a slider pretending to be a
+		* fader. The host clamps, and identical values are dropped so a jittery pointer
+		* can't spam the engine.
+		*
+		* Pointer capture on the element, as everywhere else here: the sandbox exposes
+		* no ambient `window`, so window-level drag listeners are impossible — and
+		* capture is the better primitive anyway.
+		*/
+		function onPitchDown(e) {
+			if (e.button !== 0 || typeof host.actions.setRate !== "function") return;
+			e.preventDefault();
+			e.stopPropagation();
+			const target = e.currentTarget;
+			const basis = decomposeRate(rate).basis;
+			let lastSent = rate;
+			scrubbingPitch = true;
+			target.setPointerCapture?.(e.pointerId);
+			const move = (ev) => {
+				const r = target.getBoundingClientRect();
+				if (r.height <= 0) return;
+				const percent = travelToPercent((ev.clientY - r.top) / r.height);
+				showPitch(percent);
+				const next = composeRate(basis, percent);
+				if (Math.abs(next - lastSent) > 5e-4) {
+					lastSent = next;
+					setRate(next);
+				}
+			};
+			const up = () => {
+				scrubbingPitch = false;
+				target.removeEventListener("pointermove", move);
+				target.removeEventListener("pointerup", up);
+				target.removeEventListener("pointercancel", up);
+			};
+			target.addEventListener("pointermove", move);
+			target.addEventListener("pointerup", up);
+			target.addEventListener("pointercancel", up);
+			move(e);
+		}
 		return {
 			mount(h) {
 				host = h;
@@ -689,8 +1462,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				style.textContent = DECK_CSS;
 				root.append(style);
 				deck = doc.createElement("div");
-				deck.className = "deck lifted";
-				deck.innerHTML = "<div class=\"platter\"><div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div><div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
+				deck.className = `deck lifted skin-${cfg.name}`;
+				deck.innerHTML = (cfg.furniture ? PLINTH_HTML : "") + "<div class=\"platter\">" + (cfg.furniture ? "<div class=\"rim\"><i class=\"dots\"></i></div>" : "") + "<div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div>" + (cfg.furniture ? SARM_SVG : "") + "<div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
 				root.append(deck);
 				platter = deck.querySelector(".platter");
 				spin = deck.querySelector(".spin");
@@ -699,9 +1472,22 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				arm = deck.querySelector(".arm");
 				lever = deck.querySelector(".lever");
 				deck.querySelector(".head").addEventListener("pointerdown", onDown);
-				lever.addEventListener("click", () => {
+				lever.addEventListener("click", toggleTransport);
+				deck.querySelector(".start")?.addEventListener("click", () => {
 					if (typeof host.actions.setPlaying !== "function") return;
+					if (playing) motorStopped = true;
 					host.actions.setPlaying(!playing);
+				});
+				dots = deck.querySelector(".dots");
+				s33 = deck.querySelector(".s33");
+				s45 = deck.querySelector(".s45");
+				s33?.addEventListener("click", () => setRate(composeRate(1, decomposeRate(rate).percent)));
+				s45?.addEventListener("click", () => setRate(composeRate(RATE_45, decomposeRate(rate).percent)));
+				pitch = deck.querySelector(".pitch");
+				pval = deck.querySelector(".pval");
+				pitch?.addEventListener("pointerdown", onPitchDown);
+				deck.querySelector(".reset")?.addEventListener("click", () => {
+					setRate(decomposeRate(rate).basis);
 				});
 				unsubs.push(h.onResize((s) => {
 					size = s;
@@ -711,6 +1497,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			},
 			frame(state) {
 				playing = state.playing;
+				rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;
 				if (state.queueRevision !== lastRevision) {
 					lastRevision = state.queueRevision;
 					repress(state.queue);
@@ -727,8 +1514,30 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					const r = positionToRadius(bands, idx, state.positionSecs, geo);
 					arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
 				}
-				deck.classList.toggle("lifted", !state.playing);
-				if (!host.reducedMotion) spin.style.transform = `rotate(${state.timeMs / 1800 * 360 % 360}deg)`;
+				if (state.playing && !wasPlaying) motorStopped = false;
+				wasPlaying = state.playing;
+				deck.classList.toggle("lifted", !state.playing && !motorStopped);
+				deck.classList.toggle("motor-off", motorStopped);
+				const pitchState = decomposeRate(rate);
+				if (s33) s33.classList.toggle("on", pitchState.basis === 1);
+				if (s45) s45.classList.toggle("on", pitchState.basis !== 1);
+				if (!scrubbingPitch) showPitch(pitchState.percent);
+				deck.classList.toggle("off-speed", Math.abs(pitchState.percent) > .05);
+				if (!host.reducedMotion) {
+					const dt = lastMs === null ? 0 : Math.max(0, Math.min(250, state.timeMs - lastMs));
+					const target = motorStopped ? 0 : rate;
+					const tau = target === 0 ? BRAKE_TAU_MS : SPINUP_TAU_MS;
+					spinVel += (target - spinVel) * (1 - Math.exp(-dt / tau));
+					if (Math.abs(target - spinVel) < .001) spinVel = target;
+					spinAngle = (spinAngle + dt / 1800 * 360 * spinVel) % 360;
+					spin.style.transform = `rotate(${spinAngle}deg)`;
+					if (dots) {
+						const reference = spinVel > .05 ? 1 : 0;
+						dotAngle = (dotAngle + dt / 1800 * 360 * (spinVel - reference)) % 360;
+						dots.style.transform = `rotate(${dotAngle}deg)`;
+					}
+				}
+				lastMs = state.timeMs;
 			},
 			destroy() {
 				for (const u of unsubs) try {
@@ -741,7 +1550,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	//#endregion
 	//#region src/index.ts
 	function activate(api) {
-		api.visualizers.onMount("deck", () => createVinylDeckVisualizer());
+		api.visualizers.onMount("deck", () => createVinylDeckVisualizer("studio"));
+		api.visualizers.onMount("sl1200", () => createVinylDeckVisualizer("sl1200"));
 	}
 	function deactivate() {}
 	//#endregion

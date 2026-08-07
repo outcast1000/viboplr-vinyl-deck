@@ -10,6 +10,7 @@ import {
   clampToProgram,
   buildArmMount,
   armAngleDeg,
+  ARM,
 } from "./geometry";
 
 const SIZE = 368;
@@ -257,5 +258,40 @@ describe("armAngleDeg", () => {
   it("stays finite for an unreachable radius instead of returning NaN", () => {
     expect(Number.isFinite(armAngleDeg(0, geo, mount))).toBe(true);
     expect(Number.isFinite(armAngleDeg(1e6, geo, mount))).toBe(true);
+  });
+});
+
+describe("buildArmMount with a per-skin spec", () => {
+  // The SL-1200 livery mounts the arm at the real deck's proportions, which the
+  // inscribed studio disc has no room for. The maths must hold for any spec — a
+  // skin that changed where the stylus actually landed would silently mis-cue.
+  const SL = { pivotAngleDeg: -23, pivotDistance: 1.42, length: 1.52 };
+
+  it("defaults to the built-in mount when no spec is given", () => {
+    expect(buildArmMount(geo)).toEqual(buildArmMount(geo, ARM));
+  });
+
+  it("scales the pivot and length from the spec", () => {
+    const m = buildArmMount(geo, SL);
+    expect(m.distance).toBeCloseTo(geo.rEdge * 1.42, 6);
+    expect(m.length).toBeCloseTo(geo.rEdge * 1.52, 6);
+    // Further out than the compressed default, which is the whole point.
+    expect(m.distance).toBeGreaterThan(buildArmMount(geo).distance);
+  });
+
+  it("still puts the stylus exactly on the requested radius", () => {
+    const m = buildArmMount(geo, SL);
+    for (const r of [geo.rLeadIn, 140, 110, geo.rProgIn]) {
+      const rad = (armAngleDeg(r, geo, m) * Math.PI) / 180;
+      const sx = m.px + m.length * Math.cos(rad);
+      const sy = m.py + m.length * Math.sin(rad);
+      expect(Math.hypot(sx - geo.cx, sy - geo.cy)).toBeCloseTo(r, 4);
+    }
+  });
+
+  it("can still reach both ends of the program area", () => {
+    const m = buildArmMount(geo, SL);
+    expect(Math.abs(m.distance - m.length)).toBeLessThanOrEqual(geo.rProgIn);
+    expect(m.distance + m.length).toBeGreaterThanOrEqual(geo.rLeadIn);
   });
 });

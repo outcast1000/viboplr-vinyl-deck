@@ -9,8 +9,13 @@
 // a gap outline — plus a panel, storage and a live options object threaded down to
 // every mounted instance so a running deck could pick a change up mid-frame. All
 // of it is gone: none of the three answered a question a listener has, and two of
-// them made the deck less like a record rather than more. What's left is the whole
-// plugin.
+// them made the deck less like a record rather than more.
+//
+// The two LIVERIES below are not a setting either, and that is the point. Each is
+// contributed as its own visualizer, so choosing between them happens in the
+// host's visualizer picker — the same list that offers the plain artwork. So a
+// second deck arrives without a panel, without storage, and without anything
+// mutating a running instance from underneath it.
 //
 // Built by vite into a single IIFE (see vite.config.ts), so the host's existing
 // `new Function("api", code)` loader is unchanged — the build step is purely
@@ -22,7 +27,8 @@ import { createVinylDeckVisualizer } from "./visualizer";
 export function activate(api: ViboplrHostApi) {
   // A fresh instance per occupied slot — the same deck may be in two at once
   // (Now Playing and fullscreen), and they must not share DOM.
-  api.visualizers.onMount("deck", () => createVinylDeckVisualizer());
+  api.visualizers.onMount("deck", () => createVinylDeckVisualizer("studio"));
+  api.visualizers.onMount("sl1200", () => createVinylDeckVisualizer("sl1200"));
 }
 
 export function deactivate() {
