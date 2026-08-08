@@ -4,8 +4,7 @@
   direct-drive console**, after an SL-1200 MK7 seen from above: a brushed plinth,
   the platter sitting left of centre with its stroboscope dots showing around the
   record, an S-shaped arm on a real gimbal, the pitch fader, the 45 adaptor well,
-  and a **START/STOP that actually starts and stops** (same action as the cue
-  lever — on a real deck they are two controls over one motor).
+  and a **START/STOP that actually starts and stops the platter**.
 - **A deck is not a setting.** Each livery is contributed to the host as its own
   visualizer, so you pick one from the same visualizer menu that offers the plain
   artwork. No settings panel came back to make this work: nothing is stored, and
@@ -27,8 +26,13 @@
   catches up, so the button silently degraded back into a second cue lever.) They were doing
   the same animation, which made the big labelled button read as a second,
   redundant cue lever. They're different mechanisms on a real deck and now they
-  are here: START/STOP brakes the platter to a halt and leaves the needle in the
-  groove, the lever raises the arm and leaves the platter turning. The platter
+  are here: **START/STOP drives the motor and only the motor** — it brakes the
+  platter and leaves the needle sitting in the groove of a record that has stopped
+  turning — while the lever raises and lowers the arm. Either one alone silences
+  the deck, which is the rule the whole thing runs on: motor stopped *or* head
+  raised means paused, and both have to be clear before there is sound. So the two
+  controls can disagree — pressing START with the arm up runs the platter and
+  starts nothing, exactly as it would on the desk. The platter
   spins up and brakes rather than snapping, which is the SL-1200's party trick,
   and the strobe dots coast to a stop with it — they're painted on the platter.
   A pause from anywhere else (the spacebar, the now-playing bar) is treated as the
@@ -36,6 +40,77 @@
 - The button itself was the wrong object: a chunky gradient cap where the real one
   is a pale, nearly flat slab, brighter than the plinth around it, with a small
   wide-tracked legend rather than a label filling its face.
+- **A long queue is pressed as SIDES.** Past about fifteen tracks the bands stop
+  being legible, and past twenty each band is thinner than the land beside it —
+  more gap than music, the inverse of what a record looks like. Worse, the band is
+  the drag target, so at two pixels you can't aim a cue at a track. The deck now
+  presses only the side holding what's playing, twelve tracks at a time, and
+  etches SIDE 2 OF 4 into the dead wax where a pressing plant puts its matrix
+  numbers. Crossing a boundary presses the next side; playing through one leaves
+  the record alone. A queue that fits one side is unchanged and says nothing.
+  A side is filled by TIME, ~22 minutes, the way a real one is — and that turns out
+  to be the rule that keeps the pressing legible too. A track-count cap alone still
+  allows a side holding one 30-minute track and eleven 2-minute ones, where the
+  long one takes 58% of the record and the rest are squeezed to a few pixels;
+  filling by time can't produce that, since the long track exceeds a side on its
+  own and gets one to itself. A count cap survives as a backstop for the case time
+  can't catch — sixty 20-second tracks fit inside 22 minutes and would press sixty
+  hairlines.
+- **A closer pass at the real deck.** The strobe band was inverted — dark dashes
+  on silver, where the SL-1200's is a BLACK ring carrying rows of light dots, which
+  is the one thing about that platter everyone recognises. It is now a dark band
+  with three rows of dots at different sizes and densities. The arm base was a
+  plain silver disc and read as a knob; it is now the dark housing with a chrome
+  gimbal and machined collar that it is on the deck, with a ribbed counterweight on
+  its stub. The pitch fader gained its printed tick scale and red zero mark, and
+  the plinth palette moved to a neutral mid-silver instead of reaching near-white.
+- **The stroboscope dots are actually visible.** They had never drawn at all: the
+  mask that confines them to the band of platter the record leaves showing is
+  written in percentages of the radius, but a bare `circle` radial-gradient means
+  farthest-*corner*, so 100% was the distance to the square's corner and the ring
+  landed entirely outside the disc. `closest-side` puts it back on the edge.
+- **The arm is connected to its headshell.** The tube was being drawn at a fixed
+  300px whatever the arm's real length, so it stopped short and the headshell —
+  correctly placed at the arm's end — floated free. An `<svg>` is a *replaced*
+  element: `position:absolute` with `left:0` and `right:0` but no width resolves to
+  the element's intrinsic size and drops the right offset as over-constrained.
+  Stating a width makes it stretch as intended.
+  It then stops ~24px SHORT of the arm's end, on purpose. `armAngleDeg` solves for
+  the stylus sitting at the arm's far point and the shell hangs backward from
+  there, so a full-length tube terminated at the cartridge tip with the shell
+  dangling off the far side of it — connected, but joined at the wrong end. A
+  tonearm meets its headshell at the REAR. The finger lift moved to the front
+  beside the stylus for the same reason: on the rear edge it made the tube look
+  like it was plugging into a protruding tab.
+- **The needle stays on its groove when the arm is up.** The cue lift was drawn as
+  a nudge toward the viewer in real 3D, and a perspective projection scales
+  everything about the deck's centre — so raising the arm walked the drawn stylus
+  *outward*, along the very radius that says which track is playing. It measured
+  1.7% of the record's radius on a small deck and 5.8% on a large one, because the
+  rise scaled with the deck while the perspective stayed fixed; at full size the
+  needle sat past the rim, off the record entirely. Seen from above a cue lift
+  raises the stylus straight up anyway — it stays over the same groove — so the
+  arm no longer moves at all. The height is carried by the light catching the tube
+  and the shadow falling away, which was already doing most of the work.
+- **The deck answers the host's pause and stop differently.** They are two
+  gestures, not one: **pause** raises the arm where it stands and leaves the record
+  turning under it (the cue lever, which is what a pause is on a turntable), while
+  **stop** sweeps the arm off the record and lays it on its rest and brakes the
+  platter. Until now the deck only ever saw a single `playing` flag, so it could
+  draw at most one of the two — and would draw the wrong one half the time. Needs
+  an app new enough to report the difference; on an older one a stop reads as a
+  pause, as before.
+- **The arm rest is somewhere the arm actually goes.** It used to be scenery: a
+  chrome post drawn on the plinth that nothing ever touched. It is now where the
+  arm parks — and the post's position and the park angle are one number, so it
+  can't be nudged out from under the arm that's supposed to be sitting on it.
+  Grabbing the headshell takes the arm off the rest, because that is what picking
+  it up means.
+- **The 33/45 buttons are the right object.** Pale slabs with small numerals, like
+  START/STOP, with a small indicator lamp beside each — the face no longer fills
+  with red, which was the wrong shape and drowned the plinth in colour.
+- The glowing red strobe lamp is gone. The platter stopping already says the motor
+  is off, and it read as a blob rather than the thin illuminator window it is.
 - **The pitch fader works too**, as a **trim on top of** the speed button: ±8%,
   the SL-1200's default range, with a centre detent and a live readout. Drag it —
   it bends the record continuously while you pull, because a fader that only

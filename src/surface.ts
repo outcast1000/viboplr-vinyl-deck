@@ -42,6 +42,7 @@ export function paintVinylSurface(
   geo: VinylGeometry,
   bands: Band[],
   peaks?: BandPeaks[],
+  etch?: string | null,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -109,4 +110,17 @@ export function paintVinylSurface(
   ring(rProgIn - 1, 1.4, black(0.95));
   for (let r = rProgIn - 3; r > rDeadWax; r -= 3.2) ring(r, 1, white(0.04));
   ring(rLabel + 0.5, 1, white(0.09));
+
+  // Which side this is, scratched into the dead wax — which is exactly where a
+  // pressing plant puts its matrix numbers, so it costs no new furniture and it
+  // turns with the record like a real etching would. Alpha only, like everything
+  // else on this canvas, so it can't break a skin.
+  if (etch) {
+    const bandH = rProgIn - rLabel;
+    const size = Math.max(4, bandH * 0.42);
+    ctx.font = `600 ${size.toFixed(1)}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillStyle = white(0.3);
+    ctx.fillText(etch, cx, cy + (rLabel + rProgIn) / 2 + size * 0.35);
+  }
 }

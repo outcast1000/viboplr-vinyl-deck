@@ -13,12 +13,17 @@ import type {
   PluginVisualizerTrack,
 } from "../types/viboplr-visualizer";
 import { createVinylDeckVisualizer, RATE_45 } from "./visualizer";
-import { buildGeometry, layoutBands, positionToRadius } from "./geometry";
+import { armAngleDeg, buildArmMount, buildGeometry, layoutBands, positionToRadius } from "./geometry";
 import { SKINS } from "./skins";
 import { PITCH_RANGE, composeRate } from "./pitch";
+import { type Side, splitSides } from "./sides";
 
 const SIZE = 368;
-const DURATIONS = [112, 401, 187, 134, 483, 224, 91, 322];
+// Deliberately uneven, and deliberately UNDER one side's 22 minutes (1271s):
+// everything in this file except the sides block is about a single pressing, and
+// a fixture that split would quietly be testing the wrong record. Track 4 is
+// kept above 300s so the seek-inside-the-playing-band test still has room.
+const DURATIONS = [73, 261, 122, 87, 314, 146, 59, 209];
 const QUEUE: PluginVisualizerTrack[] = DURATIONS.map((d, i) => ({
   title: `Track ${i + 1}`,
   artistName: "Halcyon Drift",
@@ -74,6 +79,7 @@ function makeHost(over: Partial<PluginVisualizerHost> = {}) {
 function makeState(over: Partial<PluginVisualizerState> = {}): PluginVisualizerState {
   return {
     playing: true,
+    stopped: false,
     positionSecs: 0,
     durationSecs: DURATIONS[0],
     queue: QUEUE,
@@ -87,16 +93,18 @@ function makeState(over: Partial<PluginVisualizerState> = {}): PluginVisualizerS
 
 let arcCount = 0;
 let strokes: string[] = [];
+let texts: string[] = [];
 const origRect = Element.prototype.getBoundingClientRect;
 
 beforeEach(() => {
   arcCount = 0;
   strokes = [];
+  texts = [];
   HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
     setTransform: () => {}, clearRect: () => {}, beginPath: () => {},
     arc: () => { arcCount++; },
     stroke() { strokes.push(String((this as { strokeStyle: string }).strokeStyle)); },
-    fill: () => {}, fillText: () => {},
+    fill: () => {}, fillText: (t: string) => { texts.push(String(t)); },
     createRadialGradient: () => ({ addColorStop: () => {} }),
     createLinearGradient: () => ({ addColorStop: () => {} }),
     lineWidth: 0, strokeStyle: "", fillStyle: "", font: "", textAlign: "",
@@ -166,6 +174,24 @@ function cue(
 const SL_SCALE = SKINS.sl1200.platterScale;
 const geoSL = buildGeometry(SIZE * SL_SCALE);
 const bandsSL = layoutBands(DURATIONS, geoSL);
+const mountSL = buildArmMount(geoSL, SKINS.sl1200.arm);
+
+/**
+ * Where the arm should come to rest on the SL-1200: straight down the ray from
+ * the pivot to the post the livery draws.
+ *
+ * Derived from `restAt` rather than pinned to a number, for the same reason the
+ * side boundaries are — the post is a tuning value, and a hardcoded angle would
+ * turn every nudge of it into a false failure while hiding the one thing worth
+ * asserting, which is that the two still agree.
+ */
+function restAngleSL() {
+  const cfg = SKINS.sl1200;
+  const plinthH = SIZE / cfg.aspect;
+  const rx = cfg.restAt!.x * SIZE - ((SIZE - geoSL.size) / 2 + cfg.offsetX * SIZE);
+  const ry = cfg.restAt!.y * plinthH - ((plinthH - geoSL.size) / 2 + cfg.offsetY * plinthH);
+  return (Math.atan2(ry - mountSL.py, rx - mountSL.px) * 180) / Math.PI;
+}
 
 describe("vinyl deck visualizer", () => {
   it("builds its DOM inside the shadow root", () => {
@@ -634,7 +660,7 @@ describe("deck liveries", () => {
 
     const silver = makeHost();
     createVinylDeckVisualizer("sl1200").mount(silver.host);
-    for (const sel of [".plinth", ".rim", ".start", ".pitch", ".speeds", ".sarm", ".strobe"]) {
+    for (const sel of [".plinth", ".rim", ".dots", ".start", ".pitch", ".speeds", ".sarm"]) {
       expect(silver.root.querySelector(sel)).toBeTruthy();
     }
   });
@@ -778,6 +804,23 @@ describe("deck liveries", () => {
     const css = (root.querySelector("style") as HTMLStyleElement).textContent ?? "";
     expect(css).toMatch(/\.skin-sl1200 \.plinth\s*\{[^}]*pointer-events:\s*none/);
     expect(css).toMatch(/\.skin-sl1200 \.start\s*\{[^}]*pointer-events:\s*auto/);
+  });
+
+  it("keeps the arm out of 3D, because a projection moves the stylus", () => {
+    // Asserted on the sheet because jsdom has no layout to measure it in, and it
+    // is worth a brittle test: a lift drawn as translateZ under a perspective
+    // scales the arm about the DECK's centre, which walks the drawn contact point
+    // outward along the very radius that encodes the playing position. Measured at
+    // +1.7% of the record radius on a 320px deck and +5.8% on a 1000px one (the Z
+    // rose with the deck while the perspective stayed a fixed 620px), which put
+    // the needle past the rim whenever the deck was stopped or paused. Height is
+    // carried by brightness and the shadow instead — see .armlift.
+    const { host, root } = makeHost();
+    createVinylDeckVisualizer("sl1200").mount(host);
+    const css = (root.querySelector("style") as HTMLStyleElement).textContent ?? "";
+    expect(css).not.toMatch(/perspective\s*:/);
+    expect(css).not.toMatch(/transform-style\s*:/);
+    expect(css).not.toMatch(/translateZ\s*\(/);
   });
 
   it("reads no skin token on either livery", () => {
@@ -1055,16 +1098,25 @@ describe("pitch fader", () => {
   });
 });
 
-describe("START/STOP is the motor, the cue lever is the arm", () => {
-  // The two controls both stop the sound, and on a real deck they look nothing
-  // alike: START/STOP cuts the platter and leaves the needle in the groove; the
-  // lever lifts the arm and leaves the platter spinning. Wiring both to the same
-  // "lifted" animation made START/STOP read as a second, redundant cue lever.
+describe("three mechanisms, one playing flag", () => {
+  // A deck has three things that each stop the sound, and they look nothing
+  // alike. START/STOP brakes the platter and leaves the needle in the groove; the
+  // cue lever raises the arm where it stands and leaves the platter turning; a
+  // full stop sends the arm home to its rest. Wiring any two of them to the same
+  // animation is what made the big labelled button read as a second, redundant
+  // cue lever.
   const deg = (el: Element | null) =>
     parseFloat((((el as HTMLElement)?.style.transform ?? "").match(/-?[\d.]+/) ?? ["0"])[0]);
 
   function run(v: ReturnType<typeof createVinylDeckVisualizer>, from: number, to: number, playing = true) {
     for (let t = from; t <= to; t += 16) v.frame(makeState({ timeMs: t, playing }));
+  }
+
+  /** Frames reporting a host STOP, which is a different state from a pause. */
+  function runStopped(v: ReturnType<typeof createVinylDeckVisualizer>, from: number, to: number) {
+    for (let t = from; t <= to; t += 16) {
+      v.frame(makeState({ timeMs: t, playing: false, stopped: true }));
+    }
   }
 
   function mounted() {
@@ -1075,14 +1127,149 @@ describe("START/STOP is the motor, the cue lever is the arm", () => {
     return { ...h, v, deck: h.root.querySelector(".deck") as HTMLElement };
   }
 
-  it("stops the platter WITHOUT lifting the arm", () => {
+  const armDeg = (root: ShadowRoot) =>
+    (root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
+
+  it("START/STOP drives the MOTOR ONLY — the arm does not move", () => {
+    // The rule this whole state machine exists for. The button brakes the platter
+    // and touches nothing else: raising and lowering the arm is the lever's job,
+    // and a button that quietly did both is two controls pretending to be one.
     const { root, v, deck } = mounted();
+    const playing = armDeg(root);
+
     (root.querySelector(".start") as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     run(v, 16, 1200, false);
 
     expect(deck.classList.contains("motor-off")).toBe(true);
-    // The needle stays in the groove — that is the whole point.
+    // Needle still in the groove, at exactly the angle it was tracking.
     expect(deck.classList.contains("lifted")).toBe(false);
+    expect(armDeg(root)).toBe(playing);
+  });
+
+  it("pauses the host when the motor stops, and when the arm goes up", () => {
+    // "Motor stopped OR head raised => paused" is the contract in the outbound
+    // direction. Either mechanism alone is enough to silence a deck.
+    const stop = mounted();
+    (stop.root.querySelector(".start") as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(stop.setPlaying).toHaveBeenLastCalledWith(false);
+
+    const lever = mounted();
+    (lever.root.querySelector(".lever") as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(lever.setPlaying).toHaveBeenLastCalledWith(false);
+  });
+
+  it("does not start the music when START runs a platter with the arm up", () => {
+    // The invariant read the other way. Both mechanisms have to be clear before
+    // there can be sound, so the two controls can disagree without either being
+    // wrong — which is exactly what the desk does.
+    const { root, v, setPlaying, deck } = mounted();
+    (root.querySelector(".lever") as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    run(v, 16, 400, false);
+
+    const start = root.querySelector(".start") as HTMLElement;
+    start.dispatchEvent(new MouseEvent("click", { bubbles: true })); // motor off
+    start.dispatchEvent(new MouseEvent("click", { bubbles: true })); // motor on again
+    expect(setPlaying).toHaveBeenLastCalledWith(false);
+    // Platter running, arm still up — a cued deck, which is a real state.
+    run(v, 416, 800, false);
+    expect(deck.classList.contains("motor-off")).toBe(false);
+    expect(deck.classList.contains("lifted")).toBe(true);
+
+    // Lowering the lever is what finally asks for sound.
+    (root.querySelector(".lever") as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(setPlaying).toHaveBeenLastCalledWith(true);
+  });
+
+  it("raises the arm when the HOST pauses, leaving the platter turning", () => {
+    // Pressing pause in the now-playing bar is the cue lever, not the motor: the
+    // arm lifts where it stands and the record keeps spinning under it.
+    const { root, v, deck } = mounted();
+    const playing = armDeg(root);
+    run(v, 16, 400, false);
+
+    expect(deck.classList.contains("lifted")).toBe(true);
+    expect(deck.classList.contains("motor-off")).toBe(false);
+    // Lifted in place — still over its own groove, not swung away.
+    expect(armDeg(root)).toBe(playing);
+    const a = deg(root.querySelector(".spin"));
+    run(v, 416, 800, false);
+    expect(deg(root.querySelector(".spin"))).not.toBeCloseTo(a, 3);
+  });
+
+  it("returns the arm to its rest when the HOST stops", () => {
+    // The other host control, and the only thing that parks the arm. Off the
+    // platter entirely, which is the picture "stopped" earns over "paused".
+    const { root, v, deck } = mounted();
+    const playing = parseFloat(armDeg(root));
+    runStopped(v, 16, 1200);
+
+    expect(deck.classList.contains("lifted")).toBe(true);
+    expect(deck.classList.contains("motor-off")).toBe(true);
+    // The angle falls as the arm swings outward, so parking has to leave the
+    // pressing entirely — past even the rim, itself outside the outermost band.
+    const parked = parseFloat(armDeg(root));
+    expect(parked).toBeLessThan(playing);
+    expect(parked).toBeLessThan(armAngleDeg(geoSL.rEdge, geoSL, mountSL));
+  });
+
+  it("parks on the post it draws, not merely near it", () => {
+    // The rest's position and the park angle come from one `restAt`, so the arm
+    // cannot come to rest beside the thing it is resting on. Aiming down the
+    // pivot->post ray is what puts the post under the headshell.
+    const { root, v } = mounted();
+    runStopped(v, 16, 1200);
+
+    const at = SKINS.sl1200.restAt!;
+    const post = root.querySelector(".rest") as HTMLElement;
+    expect(parseFloat(post.style.left)).toBeCloseTo(at.x * 100, 3);
+    expect(parseFloat(post.style.top)).toBeCloseTo(at.y * 100, 3);
+
+    expect(parseFloat(armDeg(root))).toBeCloseTo(restAngleSL(), 1);
+  });
+
+  it("takes the arm off the rest when the headshell is grabbed", () => {
+    // Picking the arm up is picking it up. Without this the drag resolves, the
+    // host is told, and the very next frame snaps the arm back to the post —
+    // which reads as the gesture having done nothing.
+    const { root, v, playQueueIndex } = mounted();
+    runStopped(v, 16, 800);
+
+    cue(root, 4, 240, geoSL, bandsSL);
+    expect(playQueueIndex).toHaveBeenCalledWith(4);
+
+    v.frame(makeState({ timeMs: 900, playing: false, currentIndex: 4, positionSecs: 240 }));
+    expect(parseFloat(armDeg(root)))
+      .toBeCloseTo(armAngleDeg(positionToRadius(bandsSL, 4, 240, geoSL), geoSL, mountSL), 1);
+  });
+
+  it("brings the arm back to the groove when playback resumes after a stop", () => {
+    const { root, v } = mounted();
+    const playing = armDeg(root);
+
+    runStopped(v, 16, 800);
+    expect(armDeg(root)).not.toBe(playing);
+
+    run(v, 816, 1200, true);
+    expect(armDeg(root)).toBe(playing);
+  });
+
+  it("has no park on a livery with no rest to park on", () => {
+    // The plain deck draws no post, so a stop can only raise the arm — it must
+    // keep tracking its groove rather than aim at furniture that isn't there.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("studio");
+    v.mount(h.host);
+    v.frame(makeState({ timeMs: 0 }));
+    const before = (h.root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
+
+    expect(h.root.querySelector(".rest")).toBeNull();
+    expect(SKINS.studio.restAt).toBeUndefined();
+
+    for (let t = 16; t <= 400; t += 16) {
+      v.frame(makeState({ timeMs: t, playing: false, stopped: true }));
+    }
+    expect((h.root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg")).toBe(before);
+    expect((h.root.querySelector(".deck") as HTMLElement).classList.contains("lifted")).toBe(true);
   });
 
   it("brakes the platter to a standstill", () => {
@@ -1199,11 +1386,42 @@ describe("START/STOP survives the host's acknowledgement lag", () => {
     // Now the pause lands, and the platter must brake rather than keep turning.
     for (let t = 112; t <= 1400; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
     expect(deck.classList.contains("motor-off")).toBe(true);
+    // And the arm stays DOWN throughout. The pause frames that arrive after the
+    // button are the deck's own doing, so the "something else paused us, raise the
+    // lever" branch must not fire on them — that is the guard that keeps
+    // START/STOP from collapsing back into a second cue lever.
     expect(deck.classList.contains("lifted")).toBe(false);
 
     const stopped = deg(root.querySelector(".spin"));
     for (let t = 1416; t <= 1800; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
     expect(deg(root.querySelector(".spin"))).toBeCloseTo(stopped, 3);
+  });
+
+  it("does not raise the lever in the window after asking to play", () => {
+    // The subtlest lag of the three, and the one the three-mechanism split
+    // introduced. Asking for playback is followed by frames that still report
+    // paused; with the motor now running and the arm down, "silent for a reason I
+    // can't account for" wrongly describes them, and the deck would pop its own
+    // lever up one frame after the user pressed START to lower it.
+    const { root, v, deck } = mounted();
+    const start = root.querySelector(".start") as HTMLElement;
+
+    start.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    for (let t = 16; t <= 400; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
+
+    start.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    // A long lag on purpose: the guard must hold until the host answers, not for
+    // a couple of frames.
+    for (let t = 416; t <= 1600; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
+    expect(deck.classList.contains("lifted")).toBe(false);
+
+    // And it must not become permanent — a pause from elsewhere, once playback has
+    // actually landed, still raises the lever.
+    for (let t = 1616; t <= 1800; t += 16) v.frame(makeState({ timeMs: t, playing: true }));
+    expect(deck.classList.contains("lifted")).toBe(false);
+    for (let t = 1816; t <= 2000; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
+    expect(deck.classList.contains("lifted")).toBe(true);
+    expect(deck.classList.contains("motor-off")).toBe(false);
   });
 
   it("still clears the motor flag when playback genuinely resumes", () => {
@@ -1222,28 +1440,169 @@ describe("START/STOP survives the host's acknowledgement lag", () => {
     expect(deg(root.querySelector(".spin"))).not.toBeCloseTo(a, 3);
   });
 
-  it("restarts from the button without the arm flicking up in between", () => {
-    // Starting waits for the host to confirm, unlike stopping. Clearing the motor
-    // flag on the press instead left a window of "motor running, still paused",
-    // which is the cue-lever state — so the arm began its 0.24s spring up and then
-    // reversed. A visible twitch on every press of START.
+  it("restarts from the button without the arm twitching in between", () => {
+    // The other lag direction. Pressing START asks the host for playback, and the
+    // frames before it answers still report paused — the deck must sit still
+    // through them rather than half-animate anything. The arm in particular never
+    // moves at all here: neither press touches it, in either direction.
     const { root, v, deck } = mounted();
     const start = root.querySelector(".start") as HTMLElement;
+    const arm = root.querySelector(".arm") as HTMLElement;
+    const groove = arm.style.getPropertyValue("--deg");
 
     start.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     for (let t = 16; t <= 800; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
     expect(deck.classList.contains("motor-off")).toBe(true);
+    expect(deck.classList.contains("lifted")).toBe(false);
 
-    // Press again. The host lags the other way now, still reporting paused: the
-    // deck must sit still rather than half-animate anything.
+    // Press again. The host lags the other way now, still reporting paused.
     start.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     for (let t = 816; t <= 880; t += 16) v.frame(makeState({ timeMs: t, playing: false }));
     expect(deck.classList.contains("lifted")).toBe(false);
-    expect(deck.classList.contains("motor-off")).toBe(true);
+    // The motor is running the moment the button says so — the brake and the
+    // start are both instant on a real deck, and neither waits on the host.
+    expect(deck.classList.contains("motor-off")).toBe(false);
 
-    // Sound starts: now the platter spins up.
+    // Sound starts. Nothing about the arm has changed across the whole sequence.
     for (let t = 896; t <= 1600; t += 16) v.frame(makeState({ timeMs: t, playing: true }));
     expect(deck.classList.contains("motor-off")).toBe(false);
     expect(deck.classList.contains("lifted")).toBe(false);
+    expect(arm.style.getPropertyValue("--deg")).toBe(groove);
+  });
+});
+
+describe("a queue too long for one side", () => {
+  // Uneven, and long enough to need several sides.
+  const LONG_DURATIONS = Array.from({ length: 30 }, (_, i) => 120 + (i % 7) * 30);
+  const LONG: PluginVisualizerTrack[] = LONG_DURATIONS.map((d, i) => ({
+    title: `T${i}`,
+    artistName: "A",
+    albumTitle: "B",
+    durationSecs: d,
+    artUrl: null,
+  }));
+
+  // DERIVED, never hardcoded: the boundaries follow from the durations and the
+  // side length, and pinning them here would just re-assert splitSides while
+  // silently breaking whenever it is retuned.
+  const SIDES = splitSides(LONG_DURATIONS);
+
+  /** Geometry and bands for one side, for aiming a cue at a known band. */
+  function sideGeo(side: Side) {
+    const g = buildGeometry(SIZE);
+    return { g, b: layoutBands(LONG_DURATIONS.slice(side.start, side.start + side.count), g) };
+  }
+
+  const longState = (over: Partial<PluginVisualizerState> = {}) =>
+    makeState({ queue: LONG, queueRevision: 50, ...over });
+
+  function mounted(over: Partial<PluginVisualizerState> = {}) {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(h.host);
+    v.frame(longState(over));
+    return { ...h, v };
+  }
+
+  it("needs more than one side for this queue", () => {
+    // Guards the fixture itself: if a retune ever fits all 30 on one side, every
+    // assertion below would pass for the wrong reason.
+    expect(SIDES.length).toBeGreaterThan(2);
+  });
+
+  it("presses only the side holding the playing track", () => {
+    // Aim at the innermost band: it must be the last track of THIS side, not the
+    // last of the queue.
+    const { root, playQueueIndex } = mounted({ currentIndex: 0 });
+    const { g, b } = sideGeo(SIDES[0]);
+    cue(root, SIDES[0].count - 1, LONG_DURATIONS[SIDES[0].count - 1], g, b);
+    expect(playQueueIndex).toHaveBeenCalledWith(SIDES[0].count - 1);
+    expect(SIDES[0].count).toBeLessThan(LONG.length);
+  });
+
+  it("cues to ABSOLUTE queue indices from a later side", () => {
+    // The band grabbed is side-relative; the host only speaks queue indices.
+    // Getting this wrong plays the right-looking band on the wrong side.
+    const two = SIDES[1];
+    const { root, playQueueIndex } = mounted({ currentIndex: two.start });
+    const { g, b } = sideGeo(two);
+    cue(root, 1, 30, g, b);
+    expect(playQueueIndex).toHaveBeenCalledWith(two.start + 1);
+  });
+
+  it("seeks rather than restarts when cued onto the playing band of a later side", () => {
+    const two = SIDES[1];
+    const { root, playQueueIndex, seek } = mounted({ currentIndex: two.start + 2, positionSecs: 5 });
+    const { g, b } = sideGeo(two);
+    cue(root, 2, 40, g, b);
+    expect(seek).toHaveBeenCalledTimes(1);
+    expect(playQueueIndex).not.toHaveBeenCalled();
+  });
+
+  it("re-presses when playback crosses onto the next side", () => {
+    const { v } = mounted({ currentIndex: SIDES[0].count - 1 });
+    const afterSideOne = arcCount;
+    // Same queue and same revision — only the side changed.
+    v.frame(longState({ currentIndex: SIDES[1].start }));
+    expect(arcCount).toBeGreaterThan(afterSideOne);
+  });
+
+  it("does NOT re-press while playing through one side", () => {
+    // Sides are fixed blocks, so the record is stable until a boundary. A window
+    // centred on the playing track would repaint on every advance.
+    const { v } = mounted({ currentIndex: 0 });
+    const afterFirst = arcCount;
+    for (let i = 1; i < SIDES[0].count; i++) v.frame(longState({ currentIndex: i }));
+    expect(arcCount).toBe(afterFirst);
+  });
+
+  it("etches the side into the dead wax", () => {
+    mounted({ currentIndex: 0 });
+    expect(texts).toContain(`SIDE 1 OF ${SIDES.length}`);
+
+    texts = [];
+    const last = SIDES[SIDES.length - 1];
+    mounted({ currentIndex: last.start });
+    expect(texts).toContain(`SIDE ${SIDES.length} OF ${SIDES.length}`);
+  });
+
+  it("says nothing on a queue that fits one side", () => {
+    // "SIDE 1 OF 1" on a record with nowhere else to be is noise.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(h.host);
+    texts = [];
+    v.frame(makeState({ currentIndex: 0 }));
+    expect(texts.join(" ")).not.toMatch(/SIDE/);
+  });
+
+  it("still presses a short queue whole", () => {
+    // The fixture the rest of this file uses: sides must not touch it.
+    const { host, root, playQueueIndex } = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(host);
+    v.frame(makeState({ currentIndex: 0 }));
+    cue(root, DURATIONS.length - 1, 10);
+    expect(playQueueIndex).toHaveBeenCalledWith(DURATIONS.length - 1);
+  });
+
+  it("keeps the arm within the pressing when the playing track is elsewhere", () => {
+    const { root, v } = mounted({ currentIndex: 0 });
+    const arm = root.querySelector(".arm") as HTMLElement;
+    const atStart = parseFloat(arm.style.getPropertyValue("--deg"));
+
+    v.frame(longState({ currentIndex: LONG.length - 1 }));
+    const after = parseFloat(arm.style.getPropertyValue("--deg"));
+    expect(Number.isFinite(after)).toBe(true);
+    expect(after).toBeGreaterThan(atStart);
+  });
+
+  it("survives the queue shrinking under the current side", () => {
+    const { v, root } = mounted({ currentIndex: LONG.length - 2 });
+    expect(() =>
+      v.frame(makeState({ currentIndex: LONG.length - 2, queueRevision: 51 })),
+    ).not.toThrow();
+    const deg = (root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
+    expect(Number.isFinite(parseFloat(deg))).toBe(true);
   });
 });

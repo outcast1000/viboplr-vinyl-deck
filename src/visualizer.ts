@@ -27,6 +27,7 @@ import {
 import { paintVinylSurface } from "./surface";
 import { DECK_CSS } from "./style";
 import { type DeckSkin, skinConfig } from "./skins";
+import { type Side, sideAt, sideLabel, splitSides } from "./sides";
 import {
   RATE_45 as R45,
   composeRate,
@@ -65,7 +66,6 @@ const PLINTH_HTML =
   '<div class="adaptor"></div>' +
   '<div class="target"></div>' +
   '<div class="power"></div>' +
-  '<div class="strobe"></div>' +
   '<button class="start" type="button">START&#183;STOP</button>' +
   // Real buttons. Which one is lit comes from state.rate, never from a local
   // toggle — the host owns the rate and may change it from Settings.
@@ -81,6 +81,7 @@ const PLINTH_HTML =
   '<span class="pmark pplus">+</span>' +
   '<i></i>' +
   "</div>" +
+  '<div class="pscale"></div>' +
   '<div class="pval"></div>' +
   '<button class="reset" type="button" aria-label="Reset pitch"></button>' +
   '<div class="rest"></div>' +
@@ -135,6 +136,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let label: HTMLElement;
   let arm: HTMLElement;
   let lever: HTMLElement;
+  let rest: HTMLElement | null = null;
   let dots: HTMLElement | null = null;
   let s33: HTMLElement | null = null;
   let s45: HTMLElement | null = null;
@@ -164,31 +166,57 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let dotAngle = 0;
   let lastMs: number | null = null;
 
-  /** Last `playing` seen in frame(). The lever states the value it wants rather
-   *  than toggling, per the contract, so it has to know the current one. */
-  let playing = false;
-
   /** Last `rate` seen in frame(). Drives the platter's speed, the strobe drift
    *  and which speed button is lit. */
   let rate = 1;
 
   /**
-   * Whether the MOTOR is off, as distinct from the music being paused.
+   * THE DECK'S OWN STATE, and the reason it needs any.
    *
-   * A deck has two independent mechanisms that both stop the sound, and they look
-   * nothing alike: START/STOP cuts the platter and leaves the arm down, while the
-   * cue lever lifts the arm and leaves the platter spinning. The host has only one
-   * `playing` flag, so which of the two we're depicting is genuinely this deck's
-   * own state — the one thing here worth remembering locally.
+   * A turntable has three independent mechanisms, and each one alone is enough to
+   * stop the sound:
    *
-   * Self-correcting: any frame that reports playback clears it, because sound
-   * means the platter must be turning however it was started.
+   *   motorOff  START/STOP. Brakes the platter. Touches nothing else — in
+   *             particular it does NOT lift the arm, which stays in its groove
+   *             over a record that is no longer turning.
+   *   armUp     The cue lever. Raises the stylus off the record where it stands,
+   *             leaving the platter spinning and the arm over its groove.
+   *   parked    The arm returned to its rest, clear of the platter. Only a full
+   *             stop does this.
+   *
+   * The host has one `playing` flag and one `stopped` flag, which is enough to
+   * drive all three (see frame()) but not to *be* all three: nothing in the host
+   * knows whether a pause came from the lever or the motor, because on the host's
+   * side there is no such distinction. So this is genuinely the deck's own state,
+   * and the only state it keeps.
+   *
+   * THE INVARIANT, in both directions:
+   *   host playing  ==  !motorOff && !armUp
+   * Every control here asks for exactly that (see `syncTransport`), and every
+   * frame reconciles back to it. A deck that is stopped or lifted while the music
+   * plays is a deck drawing a lie.
    */
-  let motorStopped = false;
+  let motorOff = false;
+  let armUp = false;
+  let parked = false;
 
-  /** Previous frame's `playing`, so the motor flag can be cleared on the rising
-   *  edge rather than the level. See frame(). */
+  /** Previous frame's `playing`, so the flags can be cleared on the rising edge
+   *  rather than the level. See frame(). */
   let wasPlaying = false;
+
+  /**
+   * The deck has asked for playback and the host hasn't answered yet.
+   *
+   * `setPlaying` is asynchronous from here, so a request to PLAY is followed by
+   * frames that still report paused. Without this the reconciler reads those as
+   * "silent with the motor running and the arm down — something outside must have
+   * raised the lever" and pops the arm up, one frame after the user pressed START
+   * to lower it. The flag says: this silence is mine, I'm waiting on it.
+   *
+   * Only ever set for a request that both mechanisms agree on, and cleared the
+   * moment the host resolves it either way.
+   */
+  let pendingPlay = false;
 
   /** Platter speed, eased toward its target so the deck spins up and brakes
    *  instead of snapping. In units where 1 is 33⅓. */
@@ -214,14 +242,48 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let bands: Band[] = [];
   let size: PluginVisualizerSize = { width: 0, height: 0 };
 
+  /**
+   * Arm rotation that lays the head on the tonearm rest, or null for a livery
+   * that has no rest.
+   *
+   * Derived in repress() from the SAME `cfg.restAt` that positions the post, so
+   * the two cannot disagree. Null everywhere it can't be used: only a deck with
+   * furniture has a START/STOP, and START/STOP is the only thing that parks.
+   */
+  let restDeg: number | null = null;
+
   let lastRevision = -1;
+  /**
+   * The side currently pressed onto the record, and nothing else.
+   *
+   * A long queue can't go on one side: past ~15 bands the pressing stops being
+   * legible and past ~20 the band is thinner than the land between bands, at
+   * which point a band is too thin to aim a cue drag at. See sides.ts.
+   *
+   * Everything below works in SIDE-RELATIVE indices — bands, the arm angle, the
+   * cue result — and converts at the two host boundaries by adding side.start.
+   */
+  let side: Side | null = null;
+  /** Side start of the last pressing, so crossing a boundary re-presses. */
+  let lastSideStart = -1;
+  /**
+   * The queue cut into sides, recomputed only when the queue itself changes.
+   *
+   * Cached rather than derived per frame because the cut depends on every
+   * duration in the queue, while the only thing that changes between frames is
+   * which of these sides we are on.
+   */
+  let sides: Side[] = [];
   let lastArt: string | null = null;
   let currentIndex = -1;
   const unsubs: (() => void)[] = [];
 
   /** Lay out and repaint. Called on a queue or size change — never per frame. */
   function repress(tracks: readonly PluginVisualizerTrack[]) {
-    const durations = tracks.map((t) => t.durationSecs);
+    // Only this side's tracks are pressed. Slicing here rather than at the call
+    // site keeps `bands` and `side` in lockstep by construction.
+    const onSide = side ? tracks.slice(side.start, side.start + side.count) : tracks;
+    const durations = onSide.map((t) => t.durationSecs);
     // The plinth takes the largest square the slot allows; the record takes the
     // skin's share of it. A bare deck spends the whole box on the disc; one with
     // controls has to leave them room, and that clearance is also what lets it
@@ -271,15 +333,16 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     const k = geo.size / 368;
     const leverW = 11 * k;
     const leverH = 22 * k;
+    // Plinth fractions -> the platter's own coordinates. Both boxes are centred on
+    // the same point, so the offset is just the difference in their sizes, halved,
+    // plus whatever the skin shifts the platter by.
+    const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
+    const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
     if (cfg.leverAt) {
       // A deck with a plinth has a real place for the lever: beside the arm base,
-      // where your hand already is. Given in plinth fractions, so convert into
-      // the platter's own coordinates — the lever is a child of .platter, and
-      // nothing clips it when it lands outside (only .deck has overflow: hidden).
-      // Both boxes are centred on the same point, so the offset is just the
-      // difference in their sizes, halved.
-      const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
-      const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
+      // where your hand already is. Nothing clips it when it lands outside the
+      // disc — the lever is a child of .platter and only .deck has overflow:
+      // hidden.
       lever.style.left = `${cfg.leverAt.x * plinthW - platterLeft - leverW / 2}px`;
       lever.style.top = `${cfg.leverAt.y * plinthH - platterTop - leverH / 2}px`;
     } else {
@@ -300,10 +363,27 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
     }
 
+    // The tonearm rest, and the angle that parks the arm on it — one value, two
+    // uses, so the post can never end up somewhere the arm doesn't go. The post
+    // is a child of .plinth, so it stays in plinth fractions; the ANGLE needs the
+    // pivot, which lives in platter coordinates, hence the conversion.
+    //
+    // The arm reaches further than the post is far (the stylus is at the tube's
+    // far end and a real shell hangs past its rest), so aiming the arm straight
+    // down this ray lays the post under the headshell rather than at its tip —
+    // which is how an arm actually sits on one.
+    if (cfg.restAt && rest) {
+      rest.style.left = `${(cfg.restAt.x * 100).toFixed(3)}%`;
+      rest.style.top = `${(cfg.restAt.y * 100).toFixed(3)}%`;
+      const rx = cfg.restAt.x * plinthW - platterLeft;
+      const ry = cfg.restAt.y * plinthH - platterTop;
+      restDeg = (Math.atan2(ry - mountPoint.py, rx - mountPoint.px) * 180) / Math.PI;
+    }
+
     // Each band is grooved from its OWN track's waveform, where the host had one
     // cached. Absent peaks fall back to an even groove rather than a blank band,
     // so a queue of streaming tracks still looks like a record.
-    paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
+    paintVinylSurface(canvas, geo, bands, onSide.map((t) => t.peaks), sideLabel(side));
   }
 
   /**
@@ -353,6 +433,11 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     // no-op rather than a jump to wherever it landed.
     let last: ReturnType<typeof radiusToPosition> = null;
     dragging = true;
+    // Taking hold of the headshell takes the arm off its rest — otherwise the next
+    // frame would snap it straight back to the post and the drag would look like
+    // it never happened. The motor is left alone: picking the arm up is not
+    // touching START/STOP, and the drag ends in a play that starts it anyway.
+    parked = false;
     // Kills the arm's tracking transition for the duration: a .22s ease is right
     // for a cue jump, but under the cursor it reads as lag.
     deck.classList.add("dragging");
@@ -374,8 +459,10 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // Land on another band -> play it. Land inside the one already playing ->
       // seek within it. The two writes the contract allows, and the two a
       // tonearm needs.
-      if (last.index === currentIndex) host.actions.seek(last.positionSecs);
-      else host.actions.playQueueIndex(last.index);
+      // `last.index` is side-relative; the host speaks absolute queue indices.
+      const queueIndex = (side?.start ?? 0) + last.index;
+      if (queueIndex === currentIndex) host.actions.seek(last.positionSecs);
+      else host.actions.playQueueIndex(queueIndex);
     };
     try {
       target.setPointerCapture(e.pointerId);
@@ -389,8 +476,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   }
 
   /**
-   * Ask for the opposite of what we were last shown. Shared by the cue lever and
-   * START/STOP.
+   * Tell the host what the deck's mechanisms currently add up to.
+   *
+   * The one place `setPlaying` is called from, so the invariant above can't be
+   * violated by a control forgetting a term: a control changes its own mechanism
+   * and then asks here, rather than deciding for itself whether music should be
+   * playing. That is also why START and the lever can disagree without either
+   * being wrong — pressing START with the arm up starts the platter and nothing
+   * else, exactly as it would on the desk.
    *
    * States the value rather than toggling, per the contract — a visualizer renders
    * from a snapshot that may be a frame stale, and a toggle read against a stale
@@ -398,9 +491,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    * degrading to the decorative controls it had before, instead of throwing on
    * every click.
    */
-  function toggleTransport() {
+  function syncTransport() {
     if (typeof host.actions.setPlaying !== "function") return;
-    host.actions.setPlaying(!playing);
+    const want = !motorOff && !armUp;
+    // Only a request to PLAY has a lag window worth covering: a request to pause
+    // is already reflected by the flag that caused it, so there is nothing to
+    // misread while the host catches up.
+    pendingPlay = want;
+    host.actions.setPlaying(want);
   }
 
   /**
@@ -534,36 +632,36 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       label = deck.querySelector(".label") as HTMLElement;
       arm = deck.querySelector(".arm") as HTMLElement;
       lever = deck.querySelector(".lever") as HTMLElement;
+      rest = deck.querySelector(".rest");
 
       // The HEADSHELL is the only handle on the deck. Not the tube or the
       // counterweight (you don't drag a real tonearm by those), and not the
       // record — pressing the disc is inert.
       (deck.querySelector(".head") as HTMLElement).addEventListener("pointerdown", onDown);
 
-      // The cue lever. Its raised state already IS the paused state (see
-      // frame()), so the only honest thing for a click to do is drive playback —
-      // animating a lift while the music kept going would be a lie.
+      // THE CUE LEVER RAISES AND LOWERS THE ARM. That is its whole job, and the
+      // raised arm is what pauses the music — not the other way round. Lowering it
+      // onto a stopped platter therefore starts nothing: `syncTransport` still
+      // sees the motor off, which is what would happen on the desk.
+      //
+      // Taking the arm off the record also takes it off its rest, if it was there.
+      //
       // `click`, not `pointerdown`: it's a button, and a press that turns into a
       // drag should not fire it.
-      lever.addEventListener("click", toggleTransport);
+      lever.addEventListener("click", () => {
+        armUp = !armUp;
+        if (armUp) parked = false;
+        syncTransport();
+      });
 
-      // START/STOP, where the livery has one. Same action as the lever, because
-      // on a real deck they are two controls over one motor — and it would be an
-      // odd deck whose big labelled button did less than its cue lever.
-      // START/STOP drives the MOTOR. Same host action as the lever — there is only
-      // one `playing` — but it records that this deck is depicting a stopped
-      // platter rather than a raised arm, which is what makes the two controls
-      // look like the different mechanisms they are.
+      // START/STOP DRIVES THE MOTOR AND NOTHING ELSE, where the livery has one.
+      // It does not raise or lower the arm — that is the lever's job, and a big
+      // labelled button that silently did the lever's work too is what made the
+      // two read as one redundant control. What it does do is stop the sound,
+      // because a needle on a stationary record is silent.
       deck.querySelector(".start")?.addEventListener("click", () => {
-        if (typeof host.actions.setPlaying !== "function") return;
-        // Stopping takes effect immediately — the brake is instant on a real deck.
-        // STARTING deliberately does not: the flag is left set and cleared by the
-        // rising edge in frame(), when sound actually begins. Clearing it here
-        // instead made the arm flick up for the frames between the request and the
-        // host catching up (motor running + still paused reads as a cue-lever
-        // pause), and started the platter before there was anything to hear.
-        if (playing) motorStopped = true;
-        host.actions.setPlaying(!playing);
+        motorOff = !motorOff;
+        syncTransport();
       });
 
       // Speed selector. Sets the rate the button names — a state, not a step, so
@@ -599,16 +697,81 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     },
 
     frame(state: PluginVisualizerState) {
-      // Before the empty-queue bail below: the lever reads this to decide what
-      // to ask for, and a stale value would make its first click a no-op.
-      playing = state.playing;
+      // RECONCILE THE MECHANISMS AGAINST THE HOST, in the order the states
+      // override one another. Each branch is deliberately not a plain level check
+      // — see the notes on each.
+      //
+      // BEFORE THE EMPTY-QUEUE BAIL BELOW. The flags are what the controls read to
+      // decide what to ask for, and what the transport classes are drawn from, so
+      // letting them go stale over an empty queue would make the deck's first
+      // click after one wrong.
+      if (state.stopped) {
+        // A STOP is a stop, whoever asked for it: the arm comes off the record and
+        // back to its rest, and the platter brakes. This is the only thing that
+        // parks the arm, which is why the deck's own START/STOP doesn't.
+        motorOff = true;
+        armUp = true;
+        parked = true;
+        pendingPlay = false;
+      } else if (state.playing && !wasPlaying) {
+        // Sound started, however it was started (the lever, START, the spacebar,
+        // the next track). Everything that could be stopping it is therefore not.
+        //
+        // ON THE RISING EDGE, NOT THE LEVEL, and that distinction is the whole bug
+        // this once had. `setPlaying` is asynchronous from here: the host has to
+        // re-render before `state.playing` flips, and frame() keeps running at
+        // display rate meanwhile. Those in-between frames still report playing, so
+        // a level check wiped the flags before the pause they were set for ever
+        // arrived — and START/STOP silently degraded into a second cue lever.
+        motorOff = false;
+        armUp = false;
+        parked = false;
+        pendingPlay = false;
+      } else if (!state.playing && !motorOff && !parked && !pendingPlay) {
+        // Paused, and this deck isn't the reason. Something outside it stopped the
+        // music — the spacebar, the now-playing bar, a track ending — and the only
+        // mechanism that could account for silence with the motor still running is
+        // a raised arm. So the lever comes up, which is exactly what the user sees
+        // when they hit pause anywhere else.
+        //
+        // A LEVEL CHECK IS CORRECT HERE, unlike the branch above, because it is
+        // idempotent: the deck's own lever has already set this, and the guards
+        // rule out every state that explains the pause by itself — including the
+        // deck's own outstanding play request, which is the one that bites (see
+        // `pendingPlay`).
+        armUp = true;
+      }
+      wasPlaying = state.playing;
+
+      // THE ARM IS UP IF SOMETHING RAISED IT — the lever, or a stop that sent it
+      // home. A stopped MOTOR does not: the needle stays in the groove of a record
+      // that isn't turning, which is the picture that tells the two apart.
+      //
+      // Read from the deck's own flags rather than from `playing`, so a control
+      // takes effect on the frame it was pressed instead of when the host echoes
+      // it back — and, more importantly, so "paused" can't imply "lifted" for the
+      // one case where it must not.
+      deck.classList.toggle("lifted", armUp || parked);
+      deck.classList.toggle("motor-off", motorOff);
+
       // `rate` is absent on a host older than the speed contract; 1 keeps the
       // platter at 33 and the strobe frozen, which is what those hosts do.
       rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;
       // The pressing is the only expensive work, and `queueRevision` is the only
       // thing that can invalidate it (a resize forces it by clearing this).
+      // Re-cut the queue only when the queue itself changed; the cut depends on
+      // every duration in it, and none of those move between frames.
       if (state.queueRevision !== lastRevision) {
+        sides = splitSides(state.queue.map((t) => t.durationSecs));
+      }
+      // Which side are we on? Re-press when the queue changes OR when playback
+      // crosses onto another side — that is a different record face, not a new
+      // position on this one.
+      side = sideAt(sides, state.currentIndex);
+      const sideStart = side?.start ?? -1;
+      if (state.queueRevision !== lastRevision || sideStart !== lastSideStart) {
         lastRevision = state.queueRevision;
+        lastSideStart = sideStart;
         repress(state.queue);
       }
       if (bands.length === 0) return;
@@ -622,29 +785,19 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
 
       // Not while dragging — the hand owns the arm until it lets go.
       if (!dragging) {
-        const idx = Math.max(0, Math.min(bands.length - 1, state.currentIndex));
-        const r = positionToRadius(bands, idx, state.positionSecs, geo);
-        arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+        if (parked && restDeg !== null) {
+          // On its rest, clear of the platter. It stays there until sound returns.
+          arm.style.setProperty("--deg", `${restDeg.toFixed(2)}deg`);
+        } else {
+          // Side-relative, and clamped: while the playing track is on ANOTHER side
+          // this pins the arm at that end of the pressing rather than pointing at a
+          // band that isn't here.
+          const rel = state.currentIndex - (side?.start ?? 0);
+          const idx = Math.max(0, Math.min(bands.length - 1, rel));
+          const r = positionToRadius(bands, idx, state.positionSecs, geo);
+          arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+        }
       }
-      // Playback STARTING means the motor is running, however it was started (the
-      // lever, the spacebar, the now-playing bar). Keeps this deck's one piece of
-      // local state from ever contradicting the host.
-      //
-      // On the RISING EDGE, not the level, and that distinction is the whole bug
-      // this once had. `setPlaying` is asynchronous from here: the host has to
-      // re-render before `state.playing` flips, and frame() keeps running at
-      // display rate meanwhile. Those in-between frames still report playing, so a
-      // level check wiped the flag before the pause it was set for ever arrived —
-      // and START/STOP silently degraded into a second cue lever, arm up and
-      // platter still turning.
-      if (state.playing && !wasPlaying) motorStopped = false;
-      wasPlaying = state.playing;
-
-      // The ARM lifts for a cue-lever pause, and only then. A stopped platter
-      // leaves the needle in the groove, which is exactly what a real deck does
-      // and is the whole visual difference between the two controls.
-      deck.classList.toggle("lifted", !state.playing && !motorStopped);
-      deck.classList.toggle("motor-off", motorStopped);
 
       // Which speed is lit — and where the fader sits — both come from the HOST's
       // rate, decomposed. The deck keeps no memory of which button was pressed,
@@ -671,7 +824,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         // platter reaches speed in well under a turn and brakes harder still,
         // which is the SL-1200's party trick and the thing that makes START/STOP
         // read as a motor rather than as a second cue lever.
-        const target = motorStopped ? 0 : rate;
+        const target = motorOff ? 0 : rate;
         const tau = target === 0 ? BRAKE_TAU_MS : SPINUP_TAU_MS;
         spinVel += (target - spinVel) * (1 - Math.exp(-dt / tau));
         if (Math.abs(target - spinVel) < 0.001) spinVel = target;

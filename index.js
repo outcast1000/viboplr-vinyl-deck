@@ -199,7 +199,7 @@ var __viboplrPlugin = (function(exports) {
 	* to run when the size or the pressing changes — never on a skin change, and
 	* never per animation frame (rotation is a CSS transform on a parent).
 	*/
-	function paintVinylSurface(canvas, geo, bands, peaks) {
+	function paintVinylSurface(canvas, geo, bands, peaks, etch) {
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 		const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -246,6 +246,14 @@ var __viboplrPlugin = (function(exports) {
 		ring(rProgIn - 1, 1.4, black(.95));
 		for (let r = rProgIn - 3; r > rDeadWax; r -= 3.2) ring(r, 1, white(.04));
 		ring(rLabel + .5, 1, white(.09));
+		if (etch) {
+			const bandH = rProgIn - rLabel;
+			const size = Math.max(4, bandH * .42);
+			ctx.font = `600 ${size.toFixed(1)}px system-ui, sans-serif`;
+			ctx.textAlign = "center";
+			ctx.fillStyle = white(.3);
+			ctx.fillText(etch, cx, cy + (rLabel + rProgIn) / 2 + size * .35);
+		}
 	}
 	//#endregion
 	//#region src/style.ts
@@ -270,18 +278,19 @@ var __viboplrPlugin = (function(exports) {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  /* Load-bearing, and the only reason any 3D remains here: the cue lift is a
-     translateZ on the headshell (see .lifted .head), which is invisible without
-     a perspective on an ancestor and a preserve-3d chain down to it. The platter
-     itself is never rotated or scaled. */
-  perspective: 620px;
-  transform-style: preserve-3d;
+  /* NO PERSPECTIVE, AND NO 3D ANYWHERE IN THE ARM. This is a top-down view of a
+     record, so a radius on the disc IS a position in a track — and a perspective
+     projection scales everything about the deck's centre, which walks the drawn
+     stylus outward along that radius. The cue lift used to be a translateZ under
+     a 620px perspective, and it measured +1.7% of the record radius on a small
+     deck and +5.8% on a large one (the Z rises with the deck; the perspective was
+     a fixed 620px), which put the needle past the rim while paused. Height is
+     carried by brightness and the shadow instead — see .lifted below. */
 }
 
 .platter {
   position: relative;
   border-radius: 50%;
-  transform-style: preserve-3d;
   flex: 0 0 auto;
 }
 
@@ -426,42 +435,43 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
    no hit area of its own; see the note above). */
 .armwrap, .armrise, .arm { pointer-events: none; }
 
-.armwrap { position: absolute; inset: 0; transform-style: preserve-3d; }
+.armwrap { position: absolute; inset: 0; }
 
 /* Kept as a plain pass-through. The lift used to translate the whole arm here,
    which raised the base along with the headshell — wrong: a tonearm's pivot is
-   bolted down. The rise is now a tilt about that pivot (see .armlift). */
-.armrise {
-  position: absolute; inset: 0;
-  transform-style: preserve-3d;
-}
+   bolted down. */
+.armrise { position: absolute; inset: 0; }
 
-/* Rotation only. This updates every frame as the needle tracks, so it gets a
-   short linear transition — just enough to smooth a cue jump. */
+/* Rotation only, and the ONE transform that decides where the needle is. This
+   updates every frame as the needle tracks, so it gets a short linear transition
+   — just enough to smooth a cue jump. */
 .arm {
   position: absolute; height: 0; z-index: 20; transform-origin: 0 50%;
-  transform-style: preserve-3d;
   transform: rotate(var(--deg));
   transition: transform .22s linear;
 }
 /* Under the cursor the tracking ease reads as lag, so the arm follows the hand
    exactly while a drag is live. */
 .dragging .arm { transition: none; }
+/* Returning to the rest crosses most of the deck, so it gets a sweep rather than
+   the flick a cue jump wants. Only the outbound leg: pressing START clears
+   "motor-off" in the same frame that hands the arm its groove angle back, so the
+   needle comes down at the tracking speed — which is the decisive half anyway. */
+.motor-off .arm { transition: transform .55s cubic-bezier(.22,.68,.25,1); }
 
-/* The LIFT.
-   A tonearm's base is bolted down and only the front swings up, so nothing here
-   transforms the whole arm — the pivot and counterweight never move. The rise is
-   applied to the HEADSHELL alone (see .head below), which under the deck's
-   perspective moves it toward the viewer: it grows, brightens, and projects
-   outward off the groove. The tube's far end is hidden behind it, so the arm reads
-   as tilted.
-   A true out-of-plane rotateY about the pivot was tried and rejected: the arm
-   shares a preserve-3d context with the platter, so past a few degrees it swings
-   BEHIND the disc and is occluded outright. Not worth the fragility for a motion
-   the top-down projection barely shows anyway. */
+/* The LIFT, and it MOVES NOTHING.
+   Seen from directly above, a cue lift raises the stylus straight up — it stays
+   over the same groove, and the only things that change are how the light catches
+   the arm and how far its shadow falls. That is exactly what is animated here:
+   brightness on the tube and headshell, and the contact shadow separating and
+   softening. No transform, so the needle cannot leave the band it is reading.
+   Every attempt to add real height has been a registration bug: translateZ under
+   a perspective scales the arm about the deck's centre and walks the stylus
+   outward, a scale() lengthens the arm and does the same, and a rotateY about the
+   pivot swings the arm behind the disc (it shares a stacking context with the
+   platter) long before it reads as tilted. */
 .armlift {
   position: absolute; left: 0; right: 0; top: 0; height: 0;
-  transform-style: preserve-3d;
   filter: drop-shadow(calc(1px * var(--k)) calc(2px * var(--k)) calc(2px * var(--k)) rgba(0,0,0,.55));
   transition: filter .5s ease;
 }
@@ -501,12 +511,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
  * So: the head hangs BACKWARDS from the arm's end (right: 0), and it rotates
  * about 100% 50% — its right edge, i.e. the stylus — so the tilt is cosmetic
  * and cannot move the contact point. Don't reintroduce an offset here without
- * teaching armAngleDeg about it. */
+ * teaching armAngleDeg about it, and note that this transform is CONSTANT: the
+ * lift deliberately doesn't touch it (see .armlift). */
 .head {
   position: absolute; right: 0; top: calc(-10px * var(--k)); width: calc(32px * var(--k)); height: calc(20px * var(--k));
   border-radius: calc(3px * var(--k)) calc(6px * var(--k)) calc(6px * var(--k)) calc(3px * var(--k));
-  transform: rotate(22deg) translateZ(0); transform-origin: 100% 50%;
-  transition: transform .58s cubic-bezier(.16,.84,.28,1);
+  transform: rotate(22deg); transform-origin: 100% 50%;
   background: linear-gradient(180deg, #f2f5f9, #aeb5c1 52%, #656c7a);
   box-shadow: inset 0 1px 1px rgba(255,255,255,.65), 0 0 0 1px rgba(0,0,0,.5);
   /* The one grabbable part of the arm — re-enabled after the assembly above
@@ -537,19 +547,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   opacity: .55; filter: blur(calc(9px * var(--k)));
   transform: translate(calc(22px * var(--k)), calc(30px * var(--k))) scale(1.6);
   transition: transform .26s cubic-bezier(.34,1.5,.6,1), filter .26s ease, opacity .26s ease;
-}
-/* Paused: the cue lever raises the arm off the record in real Z. */
-/* Never scale() the arm: that lengthens it, walking the contact point outward
-   and putting the needle past the rim while paused. Height comes from
-   translateZ under the deck's perspective, which is the honest cue anyway — a
-   lifted arm really is nearer the eye.
-   The headshell rises FURTHER than the pivot, because that is what a tonearm
-   does: the pivot is fixed and the far end swings up. */
-/* Quick and springy going up, slow and damped coming down — a cue lever, not a
-   CSS transition. Same curves as the lever knob, so they read as one linkage. */
-.lifted .head {
-  transform: rotate(22deg) translateZ(calc(52px * var(--k)));
-  transition: transform .24s cubic-bezier(.34,1.5,.6,1);
 }
 .lifted .shadow { opacity: 1; }
 
@@ -584,9 +581,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   /* A record is black on any deck, so stop deriving the vinyl from the skin. */
   --vinyl-body: #17181b;
   --vinyl-body-hi: #25272c;
-  --mk7-silver: #c4c7c9;
-  --mk7-silver-hi: #eaecee;
-  --mk7-silver-lo: #9a9ea2;
+  /* Neutral, and a shade darker than the first pass — the reference plinth is a
+     mid grey-silver, not the near-white the highlight ramp was reaching. */
+  --mk7-silver: #b9bcbf;
+  --mk7-silver-hi: #dee1e3;
+  --mk7-silver-lo: #8e9296;
   --mk7-chrome-hi: #f6f8fa;
   --mk7-chrome-lo: #7d8186;
   --mk7-ink: #33363b;
@@ -617,41 +616,77 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
     0 calc(12px * var(--pk)) calc(30px * var(--pk)) rgba(0,0,0,.5);
 }
 
-/* Platter rim and its stroboscope dots.
-   A 302mm record on a 332mm platter leaves ~10% of platter showing, which is
-   where the dots live. Sits inside .platter at a negative inset so it inherits
-   the disc's box and offset for free. */
+/* Platter rim and its stroboscope band.
+   A 302mm record on a 332mm platter leaves ~10% of platter showing, and on an
+   SL-1200 that margin is the strobe band: a BLACK ring carrying rows of light
+   dots, with a bright machined lip outside it. This was inverted — dark dashes on
+   silver — which is the one thing about the deck everyone recognises, so it read
+   as some other turntable entirely.
+   Sits inside .platter at a negative inset so it inherits the disc box and offset
+   for free. All radii below are closest-side percentages: see the note on the dot
+   mask about why that keyword is not optional. */
 .skin-sl1200 .rim {
   position: absolute;
   inset: -6.5%;
   border-radius: 50%;
   pointer-events: none;
-  background: radial-gradient(circle at 36% 28%,
-    var(--mk7-silver-hi), var(--mk7-silver) 55%, var(--mk7-silver-lo));
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3),
+  background:
+    /* The dark strobe band, over the machined lip. */
+    radial-gradient(closest-side circle,
+      transparent 87.5%, #131418 88.5%, #16181c 97%, transparent 97.8%),
+    radial-gradient(circle at 36% 28%,
+      var(--mk7-silver-hi), var(--mk7-silver) 55%, var(--mk7-silver-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.35),
               0 calc(4px * var(--pk)) calc(10px * var(--pk)) rgba(0,0,0,.4);
 }
-/* The dots: a dashed ring in the band of rim the record leaves visible. Sized in
-   degrees, so they stay round-ish at any deck size.
-   Its own element, not a pseudo, because JS rotates it independently of the
-   platter to reproduce the strobe illusion (see frame()). */
+
+/* THREE ROWS of dots, not one row of dashes.
+   The real platter carries several concentric rings — different counts for the
+   speed/mains combinations — and their varying size and density is most of what
+   makes the band read as a strobe rather than as a dotted border. Each row needs
+   its own radial mask, and a mask applies to a whole element, so the rows are the
+   element and its two pseudos. All three rotate together, since they are painted
+   on the platter.
+   Dots are arcs rather than circles; at this size and count the difference is
+   invisible, and the arc width is tuned to the ring thickness so they read round. */
 .skin-sl1200 .rim .dots {
   position: absolute;
   inset: 0;
   border-radius: 50%;
   will-change: transform;
+  /* Outer row: smallest and densest. */
   background: repeating-conic-gradient(from 0deg,
-    #16181c 0deg 1.3deg, transparent 1.3deg 4.2deg);
-  -webkit-mask: radial-gradient(circle, transparent 88.5%, #000 90%, #000 97%, transparent 98.5%);
-  mask: radial-gradient(circle, transparent 88.5%, #000 90%, #000 97%, transparent 98.5%);
+    #dfe3e6 0deg 1.05deg, transparent 1.05deg 2.2deg);
+  /* CLOSEST-SIDE is load-bearing. A bare "circle" means farthest-CORNER, so 100%
+     is the distance to the square's corner (0.707x its size) and the element's own
+     round edge lands at ~70.7%. These bands are written as percentages of the
+     RADIUS, so unqualified they mask to a ring outside the disc entirely and
+     nothing draws at all — which is exactly what happened.
+     (The .shimmer and .iris masks further up are also farthest-corner, but they
+     were tuned by eye against that behaviour and read correctly — left alone.) */
+  -webkit-mask: radial-gradient(closest-side circle, transparent 94.4%, #000 95%, #000 96.9%, transparent 97.4%);
+  mask: radial-gradient(closest-side circle, transparent 94.4%, #000 95%, #000 96.9%, transparent 97.4%);
 }
-
-/* The record's own drop shadow is a big soft one, right for a disc floating on
-   black and wrong here — it washed straight over the rim and swallowed the strobe
-   dots. On a deck the record is SEATED on the platter, so it gets a tight contact
-   shadow and the rim keeps the soft one. */
-.skin-sl1200 .body {
-  box-shadow: 0 calc(2px * var(--pk)) calc(5px * var(--pk)) -1px rgba(0,0,0,.55);
+.skin-sl1200 .rim .dots::before,
+.skin-sl1200 .rim .dots::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+/* Middle row. */
+.skin-sl1200 .rim .dots::before {
+  background: repeating-conic-gradient(from 0.6deg,
+    #d6dade 0deg 1.5deg, transparent 1.5deg 3.1deg);
+  -webkit-mask: radial-gradient(closest-side circle, transparent 91.9%, #000 92.5%, #000 94.3%, transparent 94.8%);
+  mask: radial-gradient(closest-side circle, transparent 91.9%, #000 92.5%, #000 94.3%, transparent 94.8%);
+}
+/* Inner row: fewest and largest. */
+.skin-sl1200 .rim .dots::after {
+  background: repeating-conic-gradient(from 1.2deg,
+    #cdd2d6 0deg 2.3deg, transparent 2.3deg 4.6deg);
+  -webkit-mask: radial-gradient(closest-side circle, transparent 88.9%, #000 89.5%, #000 91.6%, transparent 92.1%);
+  mask: radial-gradient(closest-side circle, transparent 88.9%, #000 89.5%, #000 91.6%, transparent 92.1%);
 }
 
 /* 45rpm adaptor well, top-left. */
@@ -696,31 +731,6 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   position: absolute; left: 45%; top: 10%; width: 10%; height: 42%;
   border-radius: 1px;
   background: var(--mk7-ink);
-}
-
-/* Strobe lamp. Lit while the platter is driven, dimmed when the arm is up — the
-   one piece of furniture that reads playback, because on the real deck it is the
-   thing that tells you the platter is running. */
-.skin-sl1200 .strobe {
-  position: absolute;
-  /* Further out and lower than the photo's 8.4%/75%. The platter's circle has
-     receded by this height, but only just — at the photo's spot the rim clipped
-     the lamp's inner corner, because this plinth is squarer than the real one and
-     the disc reaches further left at the bottom. */
-  left: 6.8%; top: 79%; width: 3.6%; height: 4.6%;
-  border-radius: calc(2px * var(--pk));
-  background: linear-gradient(180deg, #ff5b52, var(--mk7-red) 45%, #8e1b19);
-  box-shadow: 0 0 calc(9px * var(--pk)) rgba(210,43,40,.8),
-              inset 0 1px 1px rgba(255,255,255,.5);
-  transition: opacity .3s ease, box-shadow .3s ease;
-}
-/* Dims with the MOTOR, not with the arm. The lamp exists to light the dots so you
-   can read the platter's speed — a stopped platter has no speed to read, while a
-   cued-up one (arm raised, platter spinning) still does. Tying this to the lifted
-   state had it going dark at exactly the moment it was still useful. */
-.skin-sl1200.motor-off .strobe {
-  opacity: .28;
-  box-shadow: inset 0 1px 1px rgba(255,255,255,.2);
 }
 
 /* START/STOP. The only control here that does anything, and it drives the same
@@ -782,24 +792,47 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   gap: 6%;
   pointer-events: auto;
 }
+/* Pale slabs with small dark numerals, matching START/STOP — on the real deck
+   these are the same kind of button, just smaller. The face NEVER changes colour:
+   a separate LED beside each numeral is what says which speed is selected, which
+   is how the deck actually indicates it. Filling the whole button red was the
+   wrong object and drowned the plinth in colour. */
 .skin-sl1200 .speeds button {
   flex: 1;
-  padding: 0;
+  position: relative;
+  padding: 0 0 0 34%;
   border: none;
   border-radius: calc(1.5px * var(--pk));
-  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-silver-lo));
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.28);
+  background: linear-gradient(180deg, #f2f4f6, #e4e6e9);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.9);
   color: var(--mk7-ink);
-  font: 600 calc(4.5px * var(--pk))/1 system-ui, sans-serif;
+  font: 500 calc(4px * var(--pk))/1 system-ui, sans-serif;
+  letter-spacing: .04em;
+  display: flex;
+  align-items: center;
   cursor: pointer;
-  transition: background .18s ease, box-shadow .18s ease, color .18s ease;
 }
-.skin-sl1200 .speeds button:hover { filter: brightness(1.06); }
-.skin-sl1200 .speeds button:active { filter: brightness(.92); }
-.skin-sl1200 .speeds button.on {
+.skin-sl1200 .speeds button:hover { filter: brightness(1.03); }
+.skin-sl1200 .speeds button:active {
+  background: linear-gradient(180deg, #dcdee1, #eceef0);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.4), inset 0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.3);
+}
+/* The indicator lamp. Dark and sunken when the speed isn't selected. */
+.skin-sl1200 .speeds button::before {
+  content: "";
+  position: absolute;
+  left: 12%; top: 50%;
+  width: 18%; height: 42%;
+  margin-top: -21%;
+  border-radius: calc(1px * var(--pk));
+  background: #6d3330;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,.55);
+  transition: background .15s ease, box-shadow .15s ease;
+}
+.skin-sl1200 .speeds button.on::before {
   background: linear-gradient(180deg, #ff6a60, var(--mk7-red));
-  color: #fff;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.3), 0 0 calc(6px * var(--pk)) rgba(210,43,40,.6);
+  box-shadow: 0 0 calc(4px * var(--pk)) rgba(210,43,40,.7),
+              inset 0 1px 1px rgba(255,255,255,.5);
 }
 
 /* Pitch fader. A real control now that the contract carries a rate: it trims the
@@ -877,6 +910,28 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   border-radius: 1px;
 }
 
+/* Tick scale beside the slot, +8 at the top through 0 to -8, as printed on the
+   plinth. A bare slot with a knob in it read as a generic slider; the graduations
+   are most of what says "pitch". Purely decorative, and pointer-transparent so it
+   cannot steal the drag from the fader. */
+.skin-sl1200 .pscale {
+  position: absolute;
+  left: 87.6%; top: 51%; width: 3.2%; height: 35.5%;
+  pointer-events: none;
+  background: repeating-linear-gradient(180deg,
+    rgba(51,54,59,.7) 0 1px, transparent 1px 6.25%);
+}
+/* The zero mark: longer, and lit red like the deck's quartz-lock lamp. */
+.skin-sl1200 .pscale::after {
+  content: "";
+  position: absolute;
+  right: 0; top: 50%;
+  width: 170%; height: 2px;
+  margin-top: -1px;
+  background: var(--mk7-red);
+  box-shadow: 0 0 calc(3px * var(--pk)) rgba(210,43,40,.5);
+}
+
 /* RESET — the quartz lock. Snaps back to exactly the selected speed however far
    the fader has been pushed, keeping the 33/45 choice. Lights while off-speed,
    so there is always something visibly offering the way back. */
@@ -900,10 +955,16 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   box-shadow: inset 0 0 0 1px rgba(0,0,0,.3), 0 0 calc(5px * var(--pk)) rgba(210,43,40,.55);
 }
 
-/* Tonearm rest, below where the arm parks. */
+/* Tonearm rest — a real destination now, not scenery: START/STOP swings the arm
+   back onto it.
+   POSITION COMES FROM JS (repress(), from cfg.restAt) and only the box and the
+   finish are here. That is deliberate: the park angle is derived from the same
+   fraction, so a post placed in CSS could be nudged out from under the arm that
+   is supposed to be sitting on it. left/top name the post's CENTRE. */
 .skin-sl1200 .rest {
   position: absolute;
-  left: 82.2%; top: 77.8%; width: 2.4%; height: 5.5%;
+  width: 2.4%; height: 5.5%;
+  transform: translate(-50%, -50%);
   border-radius: calc(2px * var(--pk));
   background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
   box-shadow: inset 0 0 0 1px rgba(0,0,0,.38);
@@ -937,9 +998,26 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 
 /* The straight tube gives way to an S. */
 .skin-sl1200 .tube { display: none; }
+/* STATING THE WIDTH IS LOAD-BEARING. An svg is a REPLACED element: with
+   position:absolute and left:0 + right:0 but width:auto, CSS resolves the width to
+   the element's INTRINSIC size — 300px by default — then treats the box as
+   over-constrained and drops the right offset. The tube was drawn 300px long
+   whatever the arm's real length, so it stopped short of the headshell entirely.
+
+   AND IT STOPS SHORT OF THE ARM'S END ON PURPOSE. armAngleDeg solves for the
+   STYLUS sitting at x = length, and the headshell hangs backward from there — so
+   running the tube the full 100% terminated it at the cartridge tip, with the
+   shell dangling off the far side of it. A tonearm joins the shell at its REAR.
+   Ending ~24px short puts the tube's tip just inside the shell's footprint, and
+   since .head paints after the svg it covers the joint, which reads as the tube
+   entering the headshell.
+   Slightly less than the shell's full 34px width: the shell is rotated about its
+   stylus end, so its rear edge swings a little, and the overlap absorbs that
+   rather than opening a gap at one extreme. */
 .skin-sl1200 .sarm {
   position: absolute;
-  left: 0; right: 0;
+  left: 0;
+  width: calc(100% - 24px * var(--pk));
   top: calc(-15px * var(--pk));
   height: calc(30px * var(--pk));
   overflow: visible;
@@ -961,60 +1039,72 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   stroke-width: calc(7.5px * var(--pk));
 }
 
-/* Gimbal: three concentric silver rings, so the base reads as a mechanism rather
-   than a dot. */
+/* The arm base. On the real deck this is a big BLACK housing sunk into the
+   plinth, carrying a chrome gimbal, the anti-skating dial and the arm-height lock
+   — dark and busy, and one of the two things the eye uses to place the deck. It
+   was a plain silver disc, which read as a knob.
+   It rotates with the arm, which is invisible: everything here is concentric. */
 .skin-sl1200 .pivot {
-  left: calc(-21px * var(--pk)); top: calc(-21px * var(--pk));
-  width: calc(42px * var(--pk)); height: calc(42px * var(--pk));
-  background: radial-gradient(circle at 34% 28%,
-    var(--mk7-chrome-hi), var(--mk7-silver) 42%, var(--mk7-chrome-lo) 100%);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.42),
-              0 calc(3px * var(--pk)) calc(7px * var(--pk)) rgba(0,0,0,.45);
+  left: calc(-30px * var(--pk)); top: calc(-30px * var(--pk));
+  width: calc(60px * var(--pk)); height: calc(60px * var(--pk));
+  background:
+    radial-gradient(circle at 38% 30%, #4a4d52 0%, #23262b 42%, #101216 78%, #0a0c0f 100%);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.6),
+              inset 0 1px 1px rgba(255,255,255,.16),
+              0 calc(4px * var(--pk)) calc(10px * var(--pk)) rgba(0,0,0,.5);
 }
+/* Chrome gimbal yoke at the centre. */
 .skin-sl1200 .pivot::after {
-  inset: calc(8px * var(--pk));
-  background: radial-gradient(circle at 38% 32%, var(--mk7-silver-hi), var(--mk7-chrome-lo));
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32);
+  inset: calc(17px * var(--pk));
+  background: radial-gradient(circle at 36% 30%,
+    var(--mk7-chrome-hi), var(--mk7-silver) 46%, var(--mk7-chrome-lo));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.45),
+              0 calc(1px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.5);
 }
+/* The machined collar between housing and yoke. */
 .skin-sl1200 .pivot::before {
   content: "";
   position: absolute;
-  inset: calc(15px * var(--pk));
+  inset: calc(9px * var(--pk));
   border-radius: 50%;
-  background: radial-gradient(circle at 40% 34%, var(--mk7-chrome-hi), var(--mk7-silver-lo));
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.36);
+  background: conic-gradient(from 210deg,
+    #8d9196, #d7dbdf 12%, #6f7378 30%, #c2c6ca 52%, #63676c 70%, #b9bdc1 88%, #8d9196);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.5);
   z-index: 1;
 }
-/* Counterweight, on its stub behind the pivot. */
-/* Counterweight. Needs a hard edge and a darker underside or it dissolves into
-   the plinth, which is the same silver — the first pass read as a white smudge. */
+
+/* Counterweight: a ribbed cylinder on its stub behind the pivot. Needs a hard
+   edge and a dark underside or it dissolves into the plinth, which is the same
+   silver — the first pass read as a white smudge. */
 .skin-sl1200 .counter {
-  left: calc(-58px * var(--pk)); top: calc(-10px * var(--pk));
-  width: calc(36px * var(--pk)); height: calc(20px * var(--pk));
-  border-radius: calc(4px * var(--pk));
+  left: calc(-72px * var(--pk)); top: calc(-13px * var(--pk));
+  width: calc(38px * var(--pk)); height: calc(26px * var(--pk));
+  border-radius: calc(5px * var(--pk));
   background: linear-gradient(180deg,
-    var(--mk7-chrome-hi) 0%, var(--mk7-silver) 32%, #6f7378 88%, #55585c 100%);
+    #d9dde1 0%, #f2f4f6 14%, #b7bbc0 46%, #6a6e73 84%, #4d5155 100%);
   box-shadow: inset 0 1px 1px rgba(255,255,255,.9),
-              0 0 0 1px rgba(0,0,0,.45),
+              0 0 0 1px rgba(0,0,0,.5),
               0 calc(3px * var(--pk)) calc(6px * var(--pk)) rgba(0,0,0,.5);
 }
 /* Knurling, so it reads as the thing you turn to balance the arm. */
 .skin-sl1200 .counter::before {
   content: "";
   position: absolute;
-  inset: 22% 12%;
+  inset: 16% 10%;
   border-radius: calc(2px * var(--pk));
   background: repeating-linear-gradient(90deg,
-    rgba(0,0,0,.22) 0 1px, rgba(255,255,255,.28) 1px calc(3px * var(--pk)));
-  opacity: .5;
+    rgba(0,0,0,.26) 0 1px, rgba(255,255,255,.3) 1px calc(3px * var(--pk)));
+  opacity: .55;
 }
+/* The stub joining it to the housing. */
 .skin-sl1200 .counter::after {
   content: "";
   position: absolute;
-  right: calc(-14px * var(--pk)); top: 42%;
-  width: calc(16px * var(--pk)); height: 16%;
-  background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-chrome-lo));
+  right: calc(-16px * var(--pk)); top: 40%;
+  width: calc(18px * var(--pk)); height: 20%;
+  background: linear-gradient(180deg, var(--mk7-silver-hi), #6f7378);
   border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.35);
 }
 
 /* Headshell: a squarer silver block with a finger lift. */
@@ -1027,11 +1117,15 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
               0 0 0 1px rgba(0,0,0,.48),
               0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.4);
 }
+/* Finger lift, at the FRONT beside the stylus — which is where it is on a real
+   headshell, and where you'd actually pinch to cue by hand. It used to sit on the
+   rear edge, so the tube appeared to plug into a protruding tab rather than into
+   the shell: half of why the join looked like it came in from the wrong side. */
 .skin-sl1200 .head::before {
   content: "";
   position: absolute;
-  left: calc(-9px * var(--pk)); top: 34%;
-  width: calc(11px * var(--pk)); height: calc(3px * var(--pk));
+  right: calc(-8px * var(--pk)); top: 12%;
+  width: calc(10px * var(--pk)); height: calc(3px * var(--pk));
   border-radius: calc(1.5px * var(--pk));
   background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
   box-shadow: 0 1px 1px rgba(0,0,0,.4);
@@ -1081,12 +1175,92 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			leverAt: {
 				x: .905,
 				y: .47
+			},
+			restAt: {
+				x: .8,
+				y: .82
 			}
 		}
 	};
 	/** Unknown names fall back to the plain deck rather than rendering nothing. */
 	function skinConfig(skin) {
 		return SKINS[skin] ?? STUDIO;
+	}
+	//#endregion
+	//#region src/sides.ts
+	/** Playing time a side holds. A 12" LP at 33⅓ is about 22 minutes. */
+	var SIDE_SECS = 1320;
+	/** Durations are optional and often unknown; an unknown one buys no time. */
+	function usable(d) {
+		return typeof d === "number" && Number.isFinite(d) && d > 0 ? d : 0;
+	}
+	/**
+	* Cut a queue into sides.
+	*
+	* A track is never split across sides — one longer than a whole side simply gets
+	* a side to itself, which is what a pressing plant would do too.
+	*
+	* Tracks with no duration contribute nothing to the time budget rather than an
+	* invented nominal: the count cap is already the right answer for "we can't tell
+	* how long these are", so there's no need to guess a number that would then be
+	* wrong in a specific way.
+	*/
+	function splitSides(durations, sideSecs = SIDE_SECS, maxTracks = 14) {
+		const n = durations.length;
+		if (n === 0) return [];
+		const sides = [];
+		let start = 0;
+		let secs = 0;
+		let count = 0;
+		for (let i = 0; i < n; i++) {
+			const d = usable(durations[i]);
+			if (count > 0 && (secs + d > sideSecs || count >= maxTracks)) {
+				sides.push({
+					index: sides.length,
+					start,
+					count,
+					secs,
+					of: 0
+				});
+				start = i;
+				secs = 0;
+				count = 0;
+			}
+			secs += d;
+			count++;
+		}
+		sides.push({
+			index: sides.length,
+			start,
+			count,
+			secs,
+			of: 0
+		});
+		for (const s of sides) s.of = sides.length;
+		return sides;
+	}
+	/**
+	* The side holding a queue index.
+	*
+	* Out-of-range clamps rather than returning null: a non-empty queue always has a
+	* side to show, and `currentIndex` is legitimately -1 before anything plays.
+	*/
+	function sideAt(sides, queueIndex) {
+		if (sides.length === 0) return null;
+		const i = Math.floor(queueIndex);
+		if (!(i > 0)) return sides[0];
+		for (let s = sides.length - 1; s >= 0; s--) if (i >= sides[s].start) return sides[s];
+		return sides[0];
+	}
+	/**
+	* What to etch in the dead wax, or null when the queue fits one side.
+	*
+	* A single-side queue is just a record; "SIDE 1 OF 1" on it would be noise. The
+	* label only earns its place once there is somewhere else to be.
+	*/
+	function sideLabel(side) {
+		if (!side || side.of <= 1) return null;
+		return `SIDE ${side.index + 1} OF ${side.of}`;
 	}
 	/** 45 and 78 expressed against a 33⅓ pressing. */
 	var RATE_45 = 45 / (100 / 3);
@@ -1165,7 +1339,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	var SPINUP_TAU_MS = 220;
 	var BRAKE_TAU_MS = 110;
 	/** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
-	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><div class=\"strobe\"></div><button class=\"start\" type=\"button\">START&#183;STOP</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\">Direct Drive</div></div>";
+	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><button class=\"start\" type=\"button\">START&#183;STOP</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pscale\"></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\">Direct Drive</div></div>";
 	/**
 	* The S-shaped arm tube.
 	*
@@ -1201,6 +1375,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let label;
 		let arm;
 		let lever;
+		let rest = null;
 		let dots = null;
 		let s33 = null;
 		let s45 = null;
@@ -1227,28 +1402,54 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		/** Strobe-dot angle, integrated the same way. See frame(). */
 		let dotAngle = 0;
 		let lastMs = null;
-		/** Last `playing` seen in frame(). The lever states the value it wants rather
-		*  than toggling, per the contract, so it has to know the current one. */
-		let playing = false;
 		/** Last `rate` seen in frame(). Drives the platter's speed, the strobe drift
 		*  and which speed button is lit. */
 		let rate = 1;
 		/**
-		* Whether the MOTOR is off, as distinct from the music being paused.
+		* THE DECK'S OWN STATE, and the reason it needs any.
 		*
-		* A deck has two independent mechanisms that both stop the sound, and they look
-		* nothing alike: START/STOP cuts the platter and leaves the arm down, while the
-		* cue lever lifts the arm and leaves the platter spinning. The host has only one
-		* `playing` flag, so which of the two we're depicting is genuinely this deck's
-		* own state — the one thing here worth remembering locally.
+		* A turntable has three independent mechanisms, and each one alone is enough to
+		* stop the sound:
 		*
-		* Self-correcting: any frame that reports playback clears it, because sound
-		* means the platter must be turning however it was started.
+		*   motorOff  START/STOP. Brakes the platter. Touches nothing else — in
+		*             particular it does NOT lift the arm, which stays in its groove
+		*             over a record that is no longer turning.
+		*   armUp     The cue lever. Raises the stylus off the record where it stands,
+		*             leaving the platter spinning and the arm over its groove.
+		*   parked    The arm returned to its rest, clear of the platter. Only a full
+		*             stop does this.
+		*
+		* The host has one `playing` flag and one `stopped` flag, which is enough to
+		* drive all three (see frame()) but not to *be* all three: nothing in the host
+		* knows whether a pause came from the lever or the motor, because on the host's
+		* side there is no such distinction. So this is genuinely the deck's own state,
+		* and the only state it keeps.
+		*
+		* THE INVARIANT, in both directions:
+		*   host playing  ==  !motorOff && !armUp
+		* Every control here asks for exactly that (see `syncTransport`), and every
+		* frame reconciles back to it. A deck that is stopped or lifted while the music
+		* plays is a deck drawing a lie.
 		*/
-		let motorStopped = false;
-		/** Previous frame's `playing`, so the motor flag can be cleared on the rising
-		*  edge rather than the level. See frame(). */
+		let motorOff = false;
+		let armUp = false;
+		let parked = false;
+		/** Previous frame's `playing`, so the flags can be cleared on the rising edge
+		*  rather than the level. See frame(). */
 		let wasPlaying = false;
+		/**
+		* The deck has asked for playback and the host hasn't answered yet.
+		*
+		* `setPlaying` is asynchronous from here, so a request to PLAY is followed by
+		* frames that still report paused. Without this the reconciler reads those as
+		* "silent with the motor running and the arm down — something outside must have
+		* raised the lever" and pops the arm up, one frame after the user pressed START
+		* to lower it. The flag says: this silence is mine, I'm waiting on it.
+		*
+		* Only ever set for a request that both mechanisms agree on, and cleared the
+		* moment the host resolves it either way.
+		*/
+		let pendingPlay = false;
 		/** Platter speed, eased toward its target so the deck spins up and brakes
 		*  instead of snapping. In units where 1 is 33⅓. */
 		let spinVel = 1;
@@ -1272,13 +1473,44 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			width: 0,
 			height: 0
 		};
+		/**
+		* Arm rotation that lays the head on the tonearm rest, or null for a livery
+		* that has no rest.
+		*
+		* Derived in repress() from the SAME `cfg.restAt` that positions the post, so
+		* the two cannot disagree. Null everywhere it can't be used: only a deck with
+		* furniture has a START/STOP, and START/STOP is the only thing that parks.
+		*/
+		let restDeg = null;
 		let lastRevision = -1;
+		/**
+		* The side currently pressed onto the record, and nothing else.
+		*
+		* A long queue can't go on one side: past ~15 bands the pressing stops being
+		* legible and past ~20 the band is thinner than the land between bands, at
+		* which point a band is too thin to aim a cue drag at. See sides.ts.
+		*
+		* Everything below works in SIDE-RELATIVE indices — bands, the arm angle, the
+		* cue result — and converts at the two host boundaries by adding side.start.
+		*/
+		let side = null;
+		/** Side start of the last pressing, so crossing a boundary re-presses. */
+		let lastSideStart = -1;
+		/**
+		* The queue cut into sides, recomputed only when the queue itself changes.
+		*
+		* Cached rather than derived per frame because the cut depends on every
+		* duration in the queue, while the only thing that changes between frames is
+		* which of these sides we are on.
+		*/
+		let sides = [];
 		let lastArt = null;
 		let currentIndex = -1;
 		const unsubs = [];
 		/** Lay out and repaint. Called on a queue or size change — never per frame. */
 		function repress(tracks) {
-			const durations = tracks.map((t) => t.durationSecs);
+			const onSide = side ? tracks.slice(side.start, side.start + side.count) : tracks;
+			const durations = onSide.map((t) => t.durationSecs);
 			const box = Math.max(40, Math.min(size.width, size.height));
 			const plinthW = box;
 			const plinthH = box / cfg.aspect;
@@ -1302,9 +1534,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const k = geo.size / 368;
 			const leverW = 11 * k;
 			const leverH = 22 * k;
+			const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
+			const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
 			if (cfg.leverAt) {
-				const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
-				const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
 				lever.style.left = `${cfg.leverAt.x * plinthW - platterLeft - leverW / 2}px`;
 				lever.style.top = `${cfg.leverAt.y * plinthH - platterTop - leverH / 2}px`;
 			} else {
@@ -1313,7 +1545,14 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				lever.style.left = `${Math.min(geo.cx + diagonal - leverW / 2, geo.size - leverW - inset)}px`;
 				lever.style.top = `${Math.min(geo.cy + diagonal - leverH / 2, geo.size - leverH - inset)}px`;
 			}
-			paintVinylSurface(canvas, geo, bands, tracks.map((t) => t.peaks));
+			if (cfg.restAt && rest) {
+				rest.style.left = `${(cfg.restAt.x * 100).toFixed(3)}%`;
+				rest.style.top = `${(cfg.restAt.y * 100).toFixed(3)}%`;
+				const rx = cfg.restAt.x * plinthW - platterLeft;
+				const ry = cfg.restAt.y * plinthH - platterTop;
+				restDeg = Math.atan2(ry - mountPoint.py, rx - mountPoint.px) * 180 / Math.PI;
+			}
+			paintVinylSurface(canvas, geo, bands, onSide.map((t) => t.peaks), sideLabel(side));
 		}
 		/**
 		* Screen point → groove radius.
@@ -1354,6 +1593,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const target = e.currentTarget;
 			let last = null;
 			dragging = true;
+			parked = false;
 			deck.classList.add("dragging");
 			const move = (ev) => {
 				const r = clampToProgram(radiusAt(ev.clientX, ev.clientY), geo);
@@ -1367,8 +1607,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				target.removeEventListener("pointerup", up);
 				target.removeEventListener("pointercancel", up);
 				if (!last) return;
-				if (last.index === currentIndex) host.actions.seek(last.positionSecs);
-				else host.actions.playQueueIndex(last.index);
+				const queueIndex = (side?.start ?? 0) + last.index;
+				if (queueIndex === currentIndex) host.actions.seek(last.positionSecs);
+				else host.actions.playQueueIndex(queueIndex);
 			};
 			try {
 				target.setPointerCapture(e.pointerId);
@@ -1378,8 +1619,14 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			target.addEventListener("pointercancel", up);
 		}
 		/**
-		* Ask for the opposite of what we were last shown. Shared by the cue lever and
-		* START/STOP.
+		* Tell the host what the deck's mechanisms currently add up to.
+		*
+		* The one place `setPlaying` is called from, so the invariant above can't be
+		* violated by a control forgetting a term: a control changes its own mechanism
+		* and then asks here, rather than deciding for itself whether music should be
+		* playing. That is also why START and the lever can disagree without either
+		* being wrong — pressing START with the arm up starts the platter and nothing
+		* else, exactly as it would on the desk.
 		*
 		* States the value rather than toggling, per the contract — a visualizer renders
 		* from a snapshot that may be a frame stale, and a toggle read against a stale
@@ -1387,9 +1634,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* degrading to the decorative controls it had before, instead of throwing on
 		* every click.
 		*/
-		function toggleTransport() {
+		function syncTransport() {
 			if (typeof host.actions.setPlaying !== "function") return;
-			host.actions.setPlaying(!playing);
+			const want = !motorOff && !armUp;
+			pendingPlay = want;
+			host.actions.setPlaying(want);
 		}
 		/**
 		* Ask the host for a playback rate.
@@ -1471,12 +1720,16 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				label = deck.querySelector(".label");
 				arm = deck.querySelector(".arm");
 				lever = deck.querySelector(".lever");
+				rest = deck.querySelector(".rest");
 				deck.querySelector(".head").addEventListener("pointerdown", onDown);
-				lever.addEventListener("click", toggleTransport);
+				lever.addEventListener("click", () => {
+					armUp = !armUp;
+					if (armUp) parked = false;
+					syncTransport();
+				});
 				deck.querySelector(".start")?.addEventListener("click", () => {
-					if (typeof host.actions.setPlaying !== "function") return;
-					if (playing) motorStopped = true;
-					host.actions.setPlaying(!playing);
+					motorOff = !motorOff;
+					syncTransport();
 				});
 				dots = deck.querySelector(".dots");
 				s33 = deck.querySelector(".s33");
@@ -1496,10 +1749,27 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				unsubs.push(h.onSkinChange(() => {}));
 			},
 			frame(state) {
-				playing = state.playing;
+				if (state.stopped) {
+					motorOff = true;
+					armUp = true;
+					parked = true;
+					pendingPlay = false;
+				} else if (state.playing && !wasPlaying) {
+					motorOff = false;
+					armUp = false;
+					parked = false;
+					pendingPlay = false;
+				} else if (!state.playing && !motorOff && !parked && !pendingPlay) armUp = true;
+				wasPlaying = state.playing;
+				deck.classList.toggle("lifted", armUp || parked);
+				deck.classList.toggle("motor-off", motorOff);
 				rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;
-				if (state.queueRevision !== lastRevision) {
+				if (state.queueRevision !== lastRevision) sides = splitSides(state.queue.map((t) => t.durationSecs));
+				side = sideAt(sides, state.currentIndex);
+				const sideStart = side?.start ?? -1;
+				if (state.queueRevision !== lastRevision || sideStart !== lastSideStart) {
 					lastRevision = state.queueRevision;
+					lastSideStart = sideStart;
 					repress(state.queue);
 				}
 				if (bands.length === 0) return;
@@ -1510,14 +1780,14 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					label.style.backgroundImage = art ? `url("${art}")` : "";
 				}
 				if (!dragging) {
-					const idx = Math.max(0, Math.min(bands.length - 1, state.currentIndex));
-					const r = positionToRadius(bands, idx, state.positionSecs, geo);
-					arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+					if (parked && restDeg !== null) arm.style.setProperty("--deg", `${restDeg.toFixed(2)}deg`);
+					else {
+						const rel = state.currentIndex - (side?.start ?? 0);
+						const idx = Math.max(0, Math.min(bands.length - 1, rel));
+						const r = positionToRadius(bands, idx, state.positionSecs, geo);
+						arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+					}
 				}
-				if (state.playing && !wasPlaying) motorStopped = false;
-				wasPlaying = state.playing;
-				deck.classList.toggle("lifted", !state.playing && !motorStopped);
-				deck.classList.toggle("motor-off", motorStopped);
 				const pitchState = decomposeRate(rate);
 				if (s33) s33.classList.toggle("on", pitchState.basis === 1);
 				if (s45) s45.classList.toggle("on", pitchState.basis !== 1);
@@ -1525,7 +1795,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				deck.classList.toggle("off-speed", Math.abs(pitchState.percent) > .05);
 				if (!host.reducedMotion) {
 					const dt = lastMs === null ? 0 : Math.max(0, Math.min(250, state.timeMs - lastMs));
-					const target = motorStopped ? 0 : rate;
+					const target = motorOff ? 0 : rate;
 					const tau = target === 0 ? BRAKE_TAU_MS : SPINUP_TAU_MS;
 					spinVel += (target - spinVel) * (1 - Math.exp(-dt / tau));
 					if (Math.abs(target - spinVel) < .001) spinVel = target;

@@ -52,6 +52,20 @@ export interface SkinConfig {
    * the arm base, where your hand already is.
    */
   leverAt?: { x: number; y: number };
+  /**
+   * Centre of the tonearm rest, in the same plinth fractions as `leverAt`.
+   *
+   * THE POST AND THE PARKED ARM READ THIS SAME VALUE — repress() positions the
+   * `.rest` element from it and derives the park angle from it, so the arm cannot
+   * come to rest anywhere but on the thing it is resting on. It was two numbers
+   * once (a CSS `left`/`top` and, separately, wherever the arm happened to swing)
+   * and that is exactly the kind of pair that drifts apart on the next nudge.
+   *
+   * Omitted means the livery has no rest — and therefore no park. Only a deck with
+   * furniture has a START/STOP to park FROM (see visualizer.ts), so a bare record
+   * never needs one.
+   */
+  restAt?: { x: number; y: number };
 }
 
 /**
@@ -100,6 +114,12 @@ const SL1200: SkinConfig = {
   arm: { pivotAngleDeg: -23, pivotDistance: 1.42, length: 1.52 },
   furniture: true,
   leverAt: { x: 0.905, y: 0.47 },
+  // Below the pivot, so the arm swings outward off the disc to reach it — the way
+  // an arm comes off a record. Pulled ~4% left of the photo's post, because
+  // this deck's arm is at TRUE SL-1200 proportions against a slightly smaller
+  // record — aimed at the photo's spot the shell overhung the pitch scale, and a
+  // parked arm lying across another control reads as a collision, not a rest.
+  restAt: { x: 0.8, y: 0.82 },
 };
 
 export const SKINS: Record<DeckSkin, SkinConfig> = {
