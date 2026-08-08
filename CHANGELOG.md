@@ -36,7 +36,7 @@
   spins up and brakes rather than snapping, which is the SL-1200's party trick,
   and the strobe dots coast to a stop with it — they're painted on the platter.
   A pause from anywhere else (the spacebar, the now-playing bar) is treated as the
-  lever, since nothing outside the deck stops a real motor.
+  lever, since pausing a turntable is what the lever is for.
 - The button itself was the wrong object: a chunky gradient cap where the real one
   is a pale, nearly flat slab, brighter than the plinth around it, with a small
   wide-tracked legend rather than a label filling its face.
