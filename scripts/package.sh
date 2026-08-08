@@ -17,9 +17,16 @@ if [ ! -f index.js ]; then
 fi
 
 # Changelog: lines under the top-most "## " heading in CHANGELOG.md, if present.
+#
+# The cap is `awk NR<=50`, NOT `head -50`. `head` closes the pipe the moment it
+# has its 50 lines, which hands `sed` a SIGPIPE — and under `set -o pipefail`
+# that kills the whole script with exit 4. It only bites once the top section is
+# longer than the cap, so it sat here harmlessly through every release whose
+# changelog happened to be shorter and then failed the first one that wasn't.
+# awk reads to EOF and closes nothing early.
 CHANGELOG=""
 if [ -f CHANGELOG.md ]; then
-  CHANGELOG=$(awk '/^## /{if(seen)exit; seen=1; next} seen{print}' CHANGELOG.md | sed '/^$/d' | head -50)
+  CHANGELOG=$(awk '/^## /{if(seen)exit; seen=1; next} seen{print}' CHANGELOG.md | sed '/^$/d' | awk 'NR<=50')
 fi
 
 rm -f vinyl-deck.zip
