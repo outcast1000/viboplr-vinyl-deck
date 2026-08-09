@@ -1471,6 +1471,74 @@ describe("the cue magnifier", () => {
     expect(seek).not.toHaveBeenCalled();
   });
 
+  /**
+   * A host new enough to load a track without starting it.
+   *
+   * `makeHost` deliberately does NOT provide this, so the default fixture keeps
+   * exercising the older-host fallback — the two paths are different code and
+   * both ship.
+   */
+  function withLoad(h: ReturnType<typeof makeHost>) {
+    const loadQueueIndex = vi.fn();
+    (h.host.actions as { loadQueueIndex?: unknown }).loadQueueIndex = loadQueueIndex;
+    return { ...h, loadQueueIndex };
+  }
+
+  it("loads without playing when the host can, so no audio escapes", () => {
+    // The honest write. `playQueueIndex` always starts, so on a paused deck the
+    // old path had to start the track and take it back — letting a fraction of a
+    // second out every time. Nothing starts here, so nothing has to be undone.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: false, currentIndex: 0 }));
+    expect(deck.classList.contains("lifted")).toBe(true);
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+
+    expect(h.loadQueueIndex).toHaveBeenCalledTimes(1);
+    const [index, positionSecs] = h.loadQueueIndex.mock.calls[0] as [number, number];
+    expect(index).toBe(4);
+    // Cued to where the needle landed, not to the start of the track.
+    expect(positionSecs).toBeCloseTo(100, 0);
+    // Nothing was started, so nothing was stopped.
+    expect(h.playQueueIndex).not.toHaveBeenCalled();
+    expect(h.setPlaying).not.toHaveBeenCalled();
+    expect(deck.classList.contains("lifted")).toBe(true);
+  });
+
+  it("still PLAYS when cueing a running deck, load or no load", () => {
+    // The new action is for placing a playhead, not for changing what the deck is
+    // doing. A cue on a running deck must keep it running.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    expect(h.playQueueIndex).toHaveBeenCalledWith(4);
+    expect(h.loadQueueIndex).not.toHaveBeenCalled();
+  });
+
+  it("falls back to play-then-undo on a host that cannot load", () => {
+    // Same gesture, older app: the deck still must not end up running, even
+    // though it has to start the track to change it.
+    const h = makeHost();
+    expect((h.host.actions as { loadQueueIndex?: unknown }).loadQueueIndex).toBeUndefined();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: false, currentIndex: 0 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    expect(h.playQueueIndex).toHaveBeenCalledWith(4);
+    v.frame(makeState({ timeMs: 32, playing: true, currentIndex: 4 }));
+    expect(h.setPlaying).toHaveBeenLastCalledWith(false);
+  });
+
   it("leaves the arm up and the deck silent when cueing a paused deck", () => {
     // MOVING THE ARM IS NOT PRESSING PLAY. On the desk you cue a stopped deck all
     // the time and it stays stopped. The contract has no "change track without

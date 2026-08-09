@@ -1,0 +1,239 @@
+<!doctype html>
+<!--
+  Dev harness: the deck mounted against a fake host, in a plain browser.
+
+      npm run harness
+
+  NOT shipped. The release zip is manifest.json + index.js and is built by
+  scripts/package.sh, which never looks here; nothing in src/ imports it.
+
+  WHY IT EXISTS. The deck's hard parts are geometric — where the stylus lands,
+  what the cue maths maps a screen point to, how the magnifier's transform
+  composes — and none of that is answerable from jsdom, which has no layout, or
+  from the app, where a plugin reload costs a Tauri rebuild. Here you can measure
+  the rendered thing directly: every bug in the cue path so far was found by
+  comparing a computed radius against a real getBoundingClientRect, and the
+  numbers in those commit messages came from this page.
+
+  Controls: skin, track count, index, position, playing, plus a STOP button.
+  `?secs=N` forces every track's duration, for seeing how much of the record a
+  given running time earns. `window.__deckRoot` is the shadow root and
+  `window.__probe()` reports the headshell's position in record-radius units.
+  Set `window.__overlay = true` to draw band boundaries and the geometry's
+  expected stylus radius over the deck.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>vinyl deck harness</title>
+    <style>
+      :root {
+        --bg-primary: #14161a;
+        --bg-tertiary: #2a2e35;
+        --text-primary: #e8eaed;
+        --accent: #6aa9ff;
+      }
+      body {
+        margin: 0;
+        background: #0b0c0e;
+        color: var(--text-primary);
+        font: 13px system-ui, sans-serif;
+        display: flex;
+        gap: 24px;
+        padding: 24px;
+      }
+      .slot {
+        width: 520px;
+        height: 520px;
+        position: relative;
+        background: var(--bg-primary);
+        border-radius: 8px;
+      }
+      .panel { display: flex; flex-direction: column; gap: 10px; width: 300px; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      label { width: 96px; opacity: .8; }
+      input[type="range"] { flex: 1; }
+      code { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div class="slot" id="slot"></div>
+    <div class="panel">
+      <div class="row"><label>skin</label>
+        <select id="skin">
+          <option value="sl1200">sl1200</option>
+          <option value="studio">studio</option>
+        </select>
+      </div>
+      <div class="row"><label>tracks</label><input id="n" type="number" value="6" min="1" max="60" /></div>
+      <div class="row"><label>index</label><input id="idx" type="range" min="0" max="5" value="0" /><code id="idxv">0</code></div>
+      <div class="row"><label>position</label><input id="pos" type="range" min="0" max="1" step="0.001" value="0" /><code id="posv">0%</code></div>
+      <div class="row"><label>playing</label><input id="playing" type="checkbox" checked /></div>
+      <div class="row"><button id="remount">remount</button><button id="stop">press STOP</button></div>
+      <div class="row"><label>arm r</label><code id="armr">-</code></div>
+      <pre id="log" style="white-space:pre-wrap;font-size:11px;opacity:.7"></pre>
+    </div>
+
+    <script type="module">
+      import { createVinylDeckVisualizer } from "/src/visualizer.ts";
+      import { buildGeometry, layoutBands, positionToRadius } from "/src/geometry.ts";
+      import { splitSides, sideAt } from "/src/sides.ts";
+
+      const slot = document.getElementById("slot");
+      let viz = null;
+      let root = null;
+      let raf = 0;
+
+      const q = (id) => document.getElementById(id);
+      const state = { playing: true, index: 0, posFrac: 0, n: 6 };
+
+      function tracks(n) {
+        // Durations vary so bands are visibly unequal. `?secs=` overrides them all,
+        // for looking at how much of the record a given running time earns.
+        const forced = Number(new URLSearchParams(location.search).get("secs")) || 0;
+        return Array.from({ length: n }, (_, i) => ({
+          title: `Track ${i + 1}`,
+          artistName: "Artist",
+          albumTitle: "Album",
+          durationSecs: forced || 150 + ((i * 71) % 190),
+          artUrl: null,
+        }));
+      }
+
+      let queue = tracks(state.n);
+
+      function mount() {
+        if (viz) { try { viz.destroy(); } catch {} }
+        slot.innerHTML = "";
+        const holder = document.createElement("div");
+        holder.style.cssText = "position:absolute;inset:0";
+        slot.append(holder);
+        root = holder.attachShadow({ mode: "open" });
+        viz = createVinylDeckVisualizer(q("skin").value);
+        viz.mount({
+          root,
+          size: { width: slot.clientWidth, height: slot.clientHeight },
+          pixelRatio: window.devicePixelRatio || 1,
+          placement: "fullscreen",
+          reducedMotion: false,
+          token: (n) => getComputedStyle(document.documentElement).getPropertyValue(n),
+          useDesignSystem() {},
+          onResize: () => () => {},
+          onSkinChange: () => () => {},
+          actions: {
+            seek: (s) => log(`seek ${s.toFixed(1)}s`),
+            playQueueIndex: (i) => { log(`playQueueIndex ${i}`); state.index = i; q("idx").value = i; },
+            setPlaying: (p) => { log(`setPlaying ${p}`); state.playing = p; q("playing").checked = p; },
+            setRate: (r) => log(`setRate ${r.toFixed(3)}`),
+          },
+        });
+        window.__deckRoot = root;
+      }
+
+      function log(m) {
+        const el = q("log");
+        el.textContent = (m + "\n" + el.textContent).split("\n").slice(0, 12).join("\n");
+      }
+
+      let t0 = 0;
+      function tick(ms) {
+        if (!t0) t0 = ms;
+        const cur = queue[state.index];
+        viz.frame({
+          playing: state.playing,
+          positionSecs: state.posFrac * (cur?.durationSecs ?? 0),
+          durationSecs: cur?.durationSecs ?? null,
+          queue,
+          currentIndex: state.index,
+          queueRevision: queue.length,
+          timeMs: ms,
+          rate: 1,
+        });
+        const arm = root.querySelector(".arm");
+        if (arm) q("armr").textContent = arm.style.getPropertyValue("--deg");
+        if (window.__overlay) drawOverlay();
+        raf = requestAnimationFrame(tick);
+      }
+
+      // Debug overlay: band boundaries, the radius the geometry says the stylus
+      // should be on, and a marker at the arm element's actual far end.
+      function drawOverlay() {
+        const platter = root.querySelector(".platter");
+        let cv = root.querySelector(".__ovl");
+        if (!cv) {
+          cv = document.createElement("canvas");
+          cv.className = "__ovl";
+          cv.style.cssText = "position:absolute;inset:0;z-index:60;pointer-events:none";
+          platter.append(cv);
+          const dot = document.createElement("div");
+          dot.className = "__tip";
+          dot.style.cssText =
+            "position:absolute;right:-4px;top:-4px;width:8px;height:8px;border-radius:50%;" +
+            "background:#f0f;box-shadow:0 0 0 1px #fff;z-index:99;pointer-events:none";
+          root.querySelector(".armlift").append(dot);
+        }
+        const w = platter.clientWidth;
+        if (cv.width !== w) { cv.width = w; cv.height = w; cv.style.width = w + "px"; cv.style.height = w + "px"; }
+        const geo = buildGeometry(w);
+        const sides = splitSides(queue.map((t) => t.durationSecs));
+        const side = sideAt(sides, state.index);
+        const onSide = queue.slice(side.start, side.start + side.count);
+        const bands = layoutBands(onSide.map((t) => t.durationSecs), geo);
+        const rel = Math.max(0, Math.min(bands.length - 1, state.index - side.start));
+        const want = positionToRadius(bands, rel, state.posFrac * (onSide[rel]?.durationSecs ?? 0), geo);
+        const c = cv.getContext("2d");
+        c.clearRect(0, 0, w, w);
+        c.lineWidth = 1;
+        bands.forEach((b, i) => {
+          c.strokeStyle = i === rel ? "rgba(0,255,120,.9)" : "rgba(0,180,255,.45)";
+          for (const r of [b.outer, b.inner]) {
+            c.beginPath(); c.arc(geo.cx, geo.cy, r, 0, Math.PI * 2); c.stroke();
+          }
+        });
+        c.strokeStyle = "#ff0"; c.lineWidth = 2;
+        c.beginPath(); c.arc(geo.cx, geo.cy, want, 0, Math.PI * 2); c.stroke();
+      }
+
+      q("skin").onchange = () => { mount(); };
+      q("n").oninput = () => {
+        state.n = Math.max(1, Number(q("n").value) || 1);
+        queue = tracks(state.n);
+        q("idx").max = String(state.n - 1);
+        if (state.index > state.n - 1) state.index = state.n - 1;
+      };
+      q("idx").oninput = () => { state.index = Number(q("idx").value); q("idxv").textContent = state.index; };
+      q("pos").oninput = () => {
+        state.posFrac = Number(q("pos").value);
+        q("posv").textContent = `${(state.posFrac * 100).toFixed(0)}%`;
+      };
+      q("playing").onchange = () => { state.playing = q("playing").checked; };
+      q("remount").onclick = () => mount();
+      q("stop").onclick = () => root.querySelector(".start")?.click();
+
+      mount();
+      raf = requestAnimationFrame(tick);
+
+      // Handy for automated checks: where the drawn stylus actually sits, in
+      // record-radius units, against where the geometry says it should.
+      window.__probe = () => {
+        const platter = root.querySelector(".platter").getBoundingClientRect();
+        const cx = platter.left + platter.width / 2;
+        const cy = platter.top + platter.height / 2;
+        const rEdge = platter.width / 2;
+        const pick = (sel, pseudo) => {
+          const el = root.querySelector(sel);
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return {
+            cx: (r.left + r.width / 2 - cx) / rEdge,
+            cy: (r.top + r.height / 2 - cy) / rEdge,
+            radius: Math.hypot(r.left + r.width / 2 - cx, r.top + r.height / 2 - cy) / rEdge,
+            w: r.width / rEdge,
+            h: r.height / rEdge,
+          };
+        };
+        return { head: pick(".head"), arm: root.querySelector(".arm").style.getPropertyValue("--deg") };
+      };
+    </script>
+  </body>
+</html>

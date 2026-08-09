@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "sync-types": "node scripts/sync-types.mjs",
+    "harness": "vite --port 5199 --strictPort --open /dev/harness.html",
     "package": "npm run build && npm test && bash scripts/package.sh",
     "verify": "npm run typecheck && npm test && npm run build"
   },

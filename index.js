@@ -1887,11 +1887,17 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				target.removeEventListener("pointercancel", up);
 				if (!last) return;
 				const queueIndex = (side?.start ?? 0) + last.index;
-				if (queueIndex === currentIndex) host.actions.seek(cueTarget(last));
-				else {
-					host.actions.playQueueIndex(queueIndex);
-					restoringCue = motorOff || armUp;
+				if (queueIndex === currentIndex) {
+					host.actions.seek(cueTarget(last));
+					return;
 				}
+				const running = !motorOff && !armUp;
+				if (!running && typeof host.actions.loadQueueIndex === "function") {
+					host.actions.loadQueueIndex(queueIndex, cueTarget(last));
+					return;
+				}
+				host.actions.playQueueIndex(queueIndex);
+				restoringCue = !running;
 			};
 			try {
 				target.setPointerCapture(e.pointerId);

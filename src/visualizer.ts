@@ -678,18 +678,29 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // `cueTarget`, not the raw position: the innermost groove of a band maps to
       // exactly its duration, and seeking THERE ends the track instead of playing
       // it. See CUE_END_MARGIN_SECS.
-      if (queueIndex === currentIndex) host.actions.seek(cueTarget(last));
-      else {
-        host.actions.playQueueIndex(queueIndex);
-        // MOVING THE ARM IS NOT PRESSING PLAY. Placing the needle somewhere sets
-        // where the deck is, not whether it is running — on the desk you cue a
-        // stopped deck all the time, and it stays stopped. But the contract has
-        // no "load this track without starting it": `playQueueIndex` is the only
-        // way to change track and it always starts. So when the deck was not
-        // running before the cue, the transport it just implied is undone on the
-        // frames that follow. See `restoringCue`.
-        restoringCue = motorOff || armUp;
+      if (queueIndex === currentIndex) {
+        host.actions.seek(cueTarget(last));
+        return;
       }
+
+      // MOVING THE ARM IS NOT PRESSING PLAY. Placing the needle says where the
+      // deck is, not that it should run — on the desk you cue a stopped deck all
+      // the time and it stays stopped.
+      const running = !motorOff && !armUp;
+      if (!running && typeof host.actions.loadQueueIndex === "function") {
+        // The honest write: make it current, cued to where the needle landed, and
+        // leave the transport alone. Nothing starts, so nothing has to be undone
+        // and no audio escapes.
+        host.actions.loadQueueIndex(queueIndex, cueTarget(last));
+        return;
+      }
+
+      host.actions.playQueueIndex(queueIndex);
+      // Fallback for a host too old to load without playing. `playQueueIndex` is
+      // then the only way to change track and it always starts, so the transport
+      // it just implied is undone over the following frames — which lets a
+      // fraction of a second of audio out. See `restoringCue`.
+      restoringCue = !running;
     };
     try {
       target.setPointerCapture(e.pointerId);
