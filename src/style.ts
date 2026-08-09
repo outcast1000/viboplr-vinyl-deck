@@ -82,11 +82,16 @@ export const DECK_CSS = `
   flex: 0 0 auto;
 }
 
+/* The disc's TRUE outer edge is this box, not the canvas — the painter stops 2px
+   short of it (see rEdge). So the hairline that states where the record ends has
+   to be drawn here: a 1px inset highlight, crisp at any deck size, which is what
+   the edge of a record actually looks like from above. Without it the vinyl faded
+   out into whatever was behind it. */
 .body {
   position: absolute; inset: 0; border-radius: 50%;
   background: radial-gradient(circle at 35% 30%,
     var(--vinyl-body-hi) 8%, var(--vinyl-body) 55%, var(--vinyl-body) 100%);
-  box-shadow: 0 10px 26px -8px rgba(0,0,0,.7);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.22), 0 10px 26px -8px rgba(0,0,0,.7);
 }
 .spin { position: absolute; inset: 0; border-radius: 50%; transform-origin: 50% 50%; will-change: transform; }
 canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
@@ -455,6 +460,18 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
     0 calc(12px * var(--pk)) calc(30px * var(--pk)) rgba(0,0,0,.5);
 }
 
+/* A record lying ON a platter, not floating above one. The generic disc shadow is
+   a soft cast for a disc on a dark ground and it has nothing to land on here, so
+   it spread a wide grey haze over the strobe band and blurred the very boundary
+   the lip highlight is drawn to state. Tight and offset instead, lit from the
+   top-left like everything else on this deck: what the eye is looking for is the
+   millimetre of air under the edge, and a millimetre does not cast 26px. */
+.skin-sl1200 .body {
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.22),
+    0 calc(1.5px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.75);
+}
+
 /* Platter rim and its stroboscope band.
    A 302mm record on a 332mm platter leaves ~10% of platter showing, and on an
    SL-1200 that margin is the strobe band: a BLACK ring carrying rows of light
@@ -577,23 +594,39 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
    leaving it decorative beside a working lever would be the odd choice. */
 .skin-sl1200 .start {
   position: absolute;
-  left: 1.3%; top: 85%; width: 11%; height: 8.4%;
+  /* These are the FACE, not the footprint. The bezel below is a spread shadow, so
+     the box is inset from where the button used to be drawn and the black frame
+     grows back out to the old bounds — the whole control still occupies
+     1.3%..12.3% across and 85%..93.4% down, which is where the photo puts it. */
+  left: 1.95%; top: 85.7%; width: 9.7%; height: 7%;
   padding: 0;
   border: none;
-  border-radius: calc(2px * var(--pk));
-  /* Nearly flat and LIGHTER than the plinth, with a thin dark outline — the real
-     button is a pale slab, not the chunky gradient cap this used to be. Its whole
-     presence on the deck comes from being brighter than the aluminium around it,
-     so the heavy top-highlight-to-dark-bottom ramp read as the wrong object. */
-  background: linear-gradient(180deg, #f2f4f6, #e4e6e9);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
-              inset 0 1px 0 rgba(255,255,255,.9),
-              0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.25);
+  border-radius: calc(1.5px * var(--pk));
+  /* Nearly flat and LIGHTER than the plinth — the real button is a pale slab, not
+     the chunky gradient cap this used to be. Its whole presence on the deck comes
+     from being brighter than the aluminium around it, so the heavy
+     top-highlight-to-dark-bottom ramp read as the wrong object. */
+  background: linear-gradient(180deg, #f4f6f8, #e5e7ea);
+  box-shadow:
+    /* THE BEZEL, and the reason this button is recognisable across a room. What
+       the eye picks out on the real deck is not the pale slab, it is the black
+       gasket frame around it: the only black-on-silver rectangle in that corner.
+       A 1px dark outline was standing in for it, which at deck size is a hairline
+       and reads as a border rather than as a part. A spread shadow grows the
+       corner radius along with the box, which is exactly how the moulded frame
+       follows the button's own corners. */
+    0 0 0 calc(2.4px * var(--pk)) #0d0f12,
+    /* The machined lip of the well the frame is sunk into. */
+    0 0 0 calc(3px * var(--pk)) rgba(255,255,255,.4),
+    inset 0 1px 0 rgba(255,255,255,.95),
+    0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.4);
   color: var(--mk7-ink);
-  /* Small, wide-tracked and low-contrast: on the real button the legend is a
-     quiet caption, not a label filling the face. */
-  font: 500 calc(4.2px * var(--pk))/1 system-ui, sans-serif;
-  letter-spacing: .1em;
+  /* Small, lightly tracked and low-contrast: on the real button the legend is a
+     quiet caption, not a label filling the face. It is set LOWER CASE, which is
+     how Technics print it — and small caps at .1em tracking was the one detail
+     that kept the whole corner looking like a generic UI button. */
+  font: 600 calc(3.9px * var(--pk))/1 system-ui, sans-serif;
+  letter-spacing: .02em;
   opacity: .96;
   display: flex;
   align-items: center;
@@ -604,49 +637,61 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 .skin-sl1200 .start:hover { filter: brightness(1.03); }
 .skin-sl1200 .start:active {
   background: linear-gradient(180deg, #dcdee1, #eceef0);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
-              inset 0 calc(1.5px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.3);
-}
-/* The recessed well the button sits in. */
-.skin-sl1200 .start::before {
-  content: "";
-  position: absolute;
-  inset: calc(-2px * var(--pk));
-  border-radius: calc(3px * var(--pk));
-  box-shadow: inset 0 1px calc(2px * var(--pk)) rgba(0,0,0,.28);
-  pointer-events: none;
+  box-shadow:
+    0 0 0 calc(2.4px * var(--pk)) #0d0f12,
+    0 0 0 calc(3px * var(--pk)) rgba(255,255,255,.4),
+    inset 0 calc(1.5px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.3);
 }
 
 /* 33 / 45. Real buttons now that the contract carries a rate — they ask the host
    for 1x and 1.35x, and the lit one is driven by the host's rate rather than by
    their own clicks, so they stay right when it's changed from Settings. Both lit
    is 78, exactly how the real deck shows it. */
+/* ONE bezel around BOTH buttons, which is how the deck is actually moulded: the
+   pair sits in a single black frame with a slot between them, not as two
+   separately outlined slabs. The frame is this element — the buttons are its flex
+   children and its padding is the frame's thickness, so the gap between them is
+   the frame showing through rather than a void.
+   Bottom-aligned with START/STOP (both end at 93.4%), as in the photo, and
+   flatter than they were: on the real deck these are barely a third of the height
+   of START/STOP. Not the full third — the numerals have to stay legible at deck
+   size, and that is the same trade the gap floor in geometry.ts makes. */
 .skin-sl1200 .speeds {
   position: absolute;
   /* 13.4%, not the photo's 12.1%: START/STOP ends at 12.3% and the two were
      touching, which their shadows turned into an apparent overlap. On the real
      deck there is daylight between them. */
-  left: 13.4%; top: 90.5%; width: 12.5%; height: 4.6%;
+  left: 13.4%; top: 89.4%; width: 12.8%; height: 4%;
   display: flex;
-  gap: 6%;
+  gap: calc(1.5px * var(--pk));
+  padding: calc(1.5px * var(--pk));
+  border-radius: calc(1.8px * var(--pk));
+  background: #0d0f12;
+  box-shadow: 0 0 0 calc(0.7px * var(--pk)) rgba(255,255,255,.4),
+              0 calc(1.5px * var(--pk)) calc(3px * var(--pk)) rgba(0,0,0,.4);
   pointer-events: auto;
 }
 /* Pale slabs with small dark numerals, matching START/STOP — on the real deck
    these are the same kind of button, just smaller. The face NEVER changes colour:
    a separate LED beside each numeral is what says which speed is selected, which
    is how the deck actually indicates it. Filling the whole button red was the
-   wrong object and drowned the plinth in colour. */
+   wrong object and drowned the plinth in colour.
+   No outline of their own: the shared frame around them already draws every edge
+   they have, and a second one inside it read as a button within a button. */
 .skin-sl1200 .speeds button {
   flex: 1;
   position: relative;
-  padding: 0 0 0 34%;
+  /* NUMERAL LEFT, LAMP RIGHT. It was the other way round, and that is the wrong
+     object: the printed numeral is the button's name and sits where a name goes,
+     with the lit window outboard of it. */
+  padding: 0 0 0 14%;
   border: none;
-  border-radius: calc(1.5px * var(--pk));
-  background: linear-gradient(180deg, #f2f4f6, #e4e6e9);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.9);
+  border-radius: calc(0.8px * var(--pk));
+  background: linear-gradient(180deg, #f4f6f8, #e5e7ea);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.95);
   color: var(--mk7-ink);
-  font: 500 calc(4px * var(--pk))/1 system-ui, sans-serif;
-  letter-spacing: .04em;
+  font: 600 calc(3.6px * var(--pk))/1 system-ui, sans-serif;
+  letter-spacing: .02em;
   display: flex;
   align-items: center;
   cursor: pointer;
@@ -654,16 +699,20 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 .skin-sl1200 .speeds button:hover { filter: brightness(1.03); }
 .skin-sl1200 .speeds button:active {
   background: linear-gradient(180deg, #dcdee1, #eceef0);
-  box-shadow: 0 0 0 1px rgba(0,0,0,.4), inset 0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.3);
+  box-shadow: inset 0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.3);
 }
-/* The indicator lamp. Dark and sunken when the speed isn't selected. */
+/* The indicator lamp. Dark and sunken when the speed isn't selected.
+   A LANDSCAPE window, not the portrait sliver this was: on the deck it is a wide
+   little letterbox, wider than it is tall. Centred by "top" and "height" summing
+   to 100%, because a percentage margin resolves against the container's WIDTH —
+   the -21% that used to centre a 42% height only worked on a square button, and
+   these are nowhere near square. */
 .skin-sl1200 .speeds button::before {
   content: "";
   position: absolute;
-  left: 12%; top: 50%;
-  width: 18%; height: 42%;
-  margin-top: -21%;
-  border-radius: calc(1px * var(--pk));
+  right: 9%; top: 34%;
+  width: 26%; height: 32%;
+  border-radius: calc(0.6px * var(--pk));
   background: #6d3330;
   box-shadow: inset 0 1px 1px rgba(0,0,0,.55);
   transition: background .15s ease, box-shadow .15s ease;

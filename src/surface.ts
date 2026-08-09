@@ -89,8 +89,23 @@ export function paintVinylSurface(
   const white = (a: number) => `rgba(255,255,255,${a})`;
   const black = (a: number) => `rgba(0,0,0,${a})`;
 
-  // --- rim: the smooth raised lip. Lit on the outside, dark on the inside. ---
-  ring(rEdge - 1, 2, white(0.17));
+  // --- rim: the smooth raised lip. ---
+  //
+  // On a real disc this ends in a HARD BRIGHT LINE, not a fade. The outermost
+  // couple of millimetres are smooth and slightly proud, so they are the one part
+  // of the record that returns the room light coherently instead of scattering it
+  // down a groove — on the reference photo the edge is the brightest thing on the
+  // vinyl. One dim 2px band read as a soft edge instead, and a soft dark edge
+  // against a dark platter is no edge at all: the record and the deck merged into
+  // a single black mass and you could not see where the disc stopped.
+  //
+  // Two rings, so the lip has a direction: the lit bevel on the very edge, and
+  // the smooth land falling away inside it before the dark step down into the
+  // grooves. The crispest line of all is not here — it is the 1px inset highlight
+  // on ".body", which sits on the disc's TRUE outer edge, 2px further out than
+  // anything this canvas can reach.
+  ring(rEdge - 0.6, 1.2, white(0.34));
+  ring(rEdge - 2, 1.6, white(0.12));
   ring(rRim, 1, black(0.9));
 
   // --- lead-in: one coarse guide spiral, ~2.5mm. Not a moat. ---

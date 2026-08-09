@@ -82,7 +82,9 @@ const PLINTH_HTML =
   '<div class="adaptor"></div>' +
   '<div class="target"></div>' +
   '<div class="power"></div>' +
-  '<button class="start" type="button">START&#183;STOP</button>' +
+  // Lower case with spaces around the middot, which is how Technics print it on
+  // the cap. It is a depiction of moulded lettering, not a UI label.
+  '<button class="start" type="button">start &#183; stop</button>' +
   // Real buttons. Which one is lit comes from state.rate, never from a local
   // toggle — the host owns the rate and may change it from Settings.
   '<div class="speeds">' +
