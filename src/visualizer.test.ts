@@ -1573,10 +1573,68 @@ describe("the cue magnifier", () => {
     expect(deck.classList.contains("lifted")).toBe(true);
   });
 
-  it("still PLAYS when cueing a running deck, load or no load", () => {
-    // The new action is for placing a playhead, not for changing what the deck is
-    // doing. A cue on a running deck must keep it running.
+  it("cues a running deck to the groove it landed on, not to 0:00", () => {
+    // The bug this replaces: `playQueueIndex` carries an index and nothing else,
+    // so dropping the needle halfway into another band started that band from the
+    // beginning — the readout promised 1:40 and the host played 0:00.
+    // `loadQueueIndex` is the only write that can change track AND carry a
+    // position, so a running deck takes it too and asks for the transport after.
     const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+
+    expect(h.playQueueIndex).not.toHaveBeenCalled();
+    expect(h.loadQueueIndex).toHaveBeenCalledTimes(1);
+    const [index, positionSecs] = h.loadQueueIndex.mock.calls[0] as [number, number];
+    expect(index).toBe(4);
+    expect(positionSecs).toBeCloseTo(100, 0);
+  });
+
+  it("plays on from the cue once the load lands, and only then", () => {
+    // A cue on a running deck must keep it running — but the ask cannot go out in
+    // the same tick. The host's setPlaying bridge drops a request that matches its
+    // own live state, and at pointerup that state still says playing, so the
+    // request would be swallowed and the deck would stand there in silence.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    expect(h.setPlaying).not.toHaveBeenCalled();
+
+    // The host has not re-rendered yet: still the old track, still playing.
+    v.frame(makeState({ timeMs: 16, playing: true, currentIndex: 0 }));
+    expect(h.setPlaying).not.toHaveBeenCalled();
+
+    // The load lands. THIS is the first frame a play request can be heard.
+    v.frame(makeState({ timeMs: 32, playing: false, currentIndex: 4, positionSecs: 100 }));
+    expect(h.setPlaying).toHaveBeenCalledTimes(1);
+    expect(h.setPlaying).toHaveBeenLastCalledWith(true);
+    // And the deck never blinked: the silence it was waiting on is its own doing,
+    // so the lever must not come up to explain it.
+    expect(deck.classList.contains("lifted")).toBe(false);
+
+    // Asked once, not every frame — a repeat would read its own stale state and
+    // toggle the music back off.
+    v.frame(makeState({ timeMs: 48, playing: false, currentIndex: 4, positionSecs: 100 }));
+    expect(h.setPlaying).toHaveBeenCalledTimes(1);
+
+    v.frame(makeState({ timeMs: 64, playing: true, currentIndex: 4, positionSecs: 100 }));
+    expect(deck.classList.contains("lifted")).toBe(false);
+    expect(deck.classList.contains("motor-off")).toBe(false);
+  });
+
+  it("keeps the old play-from-zero path when the host cannot start it again", () => {
+    // Half the contract is worse than none of it: loading without being able to
+    // ask for the transport would leave a running deck loaded and silent. Losing
+    // the cue position is the lesser failure, so that host keeps the old path.
+    const h = withLoad(makeHost());
+    delete (h.host.actions as { setPlaying?: unknown }).setPlaying;
     const v = createVinylDeckVisualizer("sl1200");
     v.mount(h.host);
     v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
@@ -1584,6 +1642,21 @@ describe("the cue magnifier", () => {
     cue(h.root, 4, 100, geoSL, bandsSL);
     expect(h.playQueueIndex).toHaveBeenCalledWith(4);
     expect(h.loadQueueIndex).not.toHaveBeenCalled();
+  });
+
+  it("drops an owed cue play when the deck is stopped before it lands", () => {
+    // A stop outranks a cue still in flight: the arm is on its rest now, so the
+    // play it was owed is no longer owed.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    v.frame(makeState({ timeMs: 16, playing: false, stopped: true, currentIndex: 4 }));
+    v.frame(makeState({ timeMs: 32, playing: false, stopped: true, currentIndex: 4 }));
+
+    expect(h.setPlaying).not.toHaveBeenCalledWith(true);
   });
 
   it("falls back to play-then-undo on a host that cannot load", () => {

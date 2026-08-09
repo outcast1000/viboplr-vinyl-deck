@@ -1646,6 +1646,23 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* clears the moment the host reports paused, so it can never latch.
 		*/
 		let restoringCue = false;
+		/**
+		* A cue moved a RUNNING deck to another band, and the play that goes with it is
+		* still owed.
+		*
+		* The mirror image of `restoringCue`: that one takes back a play the contract
+		* forced, this one supplies a play the contract deferred. `loadQueueIndex` is
+		* the only write that can change track and carry a position, and it
+		* deliberately does not start anything — so a running deck has to ask for the
+		* transport separately, and cannot do it in the same tick.
+		*
+		* WHY NOT IMMEDIATELY: the host's `setPlaying` bridge drops a request that
+		* matches its own live state, and at pointerup that state still says playing —
+		* the load has not re-rendered yet. The request would be swallowed and the deck
+		* would stand there, arm down, in silence. So the ask waits for the frame where
+		* the host actually reports paused, which is the first frame it can be heard.
+		*/
+		let resumingCue = false;
 		/** Platter speed, eased toward its target so the deck spins up and brakes
 		*  instead of snapping. In units where 1 is 33⅓. */
 		let spinVel = 1;
@@ -1985,8 +2002,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					return;
 				}
 				const running = !motorOff && !armUp;
-				if (!running && typeof host.actions.loadQueueIndex === "function") {
-					host.actions.loadQueueIndex(queueIndex, cueTarget(last));
+				const load = host.actions.loadQueueIndex;
+				if (typeof load === "function" && (!running || typeof host.actions.setPlaying === "function")) {
+					load.call(host.actions, queueIndex, cueTarget(last));
+					resumingCue = running;
+					pendingPlay = running;
 					return;
 				}
 				host.actions.playQueueIndex(queueIndex);
@@ -2142,12 +2162,17 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					if (state.playing && !wasPlaying) syncTransport();
 					else if (!state.playing) restoringCue = false;
 				}
+				if (resumingCue && !state.stopped && !state.playing) {
+					resumingCue = false;
+					syncTransport();
+				}
 				if (state.stopped) {
 					motorOff = true;
 					armUp = true;
 					parked = true;
 					pendingPlay = false;
 					restoringCue = false;
+					resumingCue = false;
 				} else if (state.playing && !wasPlaying && !restoringCue) {
 					motorOff = false;
 					armUp = false;

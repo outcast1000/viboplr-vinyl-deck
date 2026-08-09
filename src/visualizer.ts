@@ -260,6 +260,24 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    */
   let restoringCue = false;
 
+  /**
+   * A cue moved a RUNNING deck to another band, and the play that goes with it is
+   * still owed.
+   *
+   * The mirror image of `restoringCue`: that one takes back a play the contract
+   * forced, this one supplies a play the contract deferred. `loadQueueIndex` is
+   * the only write that can change track and carry a position, and it
+   * deliberately does not start anything — so a running deck has to ask for the
+   * transport separately, and cannot do it in the same tick.
+   *
+   * WHY NOT IMMEDIATELY: the host's `setPlaying` bridge drops a request that
+   * matches its own live state, and at pointerup that state still says playing —
+   * the load has not re-rendered yet. The request would be swallowed and the deck
+   * would stand there, arm down, in silence. So the ask waits for the frame where
+   * the host actually reports paused, which is the first frame it can be heard.
+   */
+  let resumingCue = false;
+
   /** Platter speed, eased toward its target so the deck spins up and brakes
    *  instead of snapping. In units where 1 is 33⅓. */
   let spinVel = 1;
@@ -734,23 +752,45 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         return;
       }
 
-      // MOVING THE ARM IS NOT PRESSING PLAY. Placing the needle says where the
-      // deck is, not that it should run — on the desk you cue a stopped deck all
-      // the time and it stays stopped.
+      // A CUE PLACES THE NEEDLE. Whether the music runs from there is the
+      // mechanisms' business, not the gesture's — on the desk you cue a stopped
+      // deck all the time and it stays stopped, and you cue a running one and it
+      // plays on from where you dropped it.
       const running = !motorOff && !armUp;
-      if (!running && typeof host.actions.loadQueueIndex === "function") {
-        // The honest write: make it current, cued to where the needle landed, and
-        // leave the transport alone. Nothing starts, so nothing has to be undone
-        // and no audio escapes.
-        host.actions.loadQueueIndex(queueIndex, cueTarget(last));
+      // A running deck needs BOTH halves — the cued load and the play that
+      // follows it. With only the first it would load the track and stand there
+      // in silence, which is worse than the old behaviour it replaces, so a host
+      // missing `setPlaying` keeps the play-from-zero fallback instead. A stopped
+      // deck never asks for the transport and so never needs the second half.
+      const load = host.actions.loadQueueIndex;
+      if (typeof load === "function"
+        && (!running || typeof host.actions.setPlaying === "function")) {
+        // `loadQueueIndex` is the ONLY write that carries a position across a
+        // track change — `playQueueIndex` takes an index and nothing else, so a
+        // running deck used to hand the host a bare index and get the new track
+        // from 0:00, throwing away the groove the readout had just promised.
+        // Cue first, ask for the transport second: the two are separate questions
+        // and only this order can answer both.
+        load.call(host.actions, queueIndex, cueTarget(last));
+        // NOT `syncTransport()` here, one frame later — see `resumingCue`. The
+        // host's setPlaying bridge compares against its own live `playing`, which
+        // still reads as playing this tick, so a request sent now is dropped as a
+        // no-op and the deck sits silent with its arm down.
+        //
+        // `pendingPlay` covers the gap: the load pauses the host, and without it
+        // the reconciler would read that silence as someone outside hitting pause
+        // and raise the lever on a deck the user is watching play on.
+        resumingCue = running;
+        pendingPlay = running;
         return;
       }
 
       host.actions.playQueueIndex(queueIndex);
       // Fallback for a host too old to load without playing. `playQueueIndex` is
-      // then the only way to change track and it always starts, so the transport
-      // it just implied is undone over the following frames — which lets a
-      // fraction of a second of audio out. See `restoringCue`.
+      // then the only way to change track and it always starts — so a running
+      // deck loses the cue position (there is nowhere to put it), and a stopped
+      // one has the transport it just implied undone over the following frames,
+      // which lets a fraction of a second of audio out. See `restoringCue`.
       restoringCue = !running;
     };
     try {
@@ -1042,6 +1082,24 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         else if (!state.playing) restoringCue = false;
       }
 
+      // The other half of that: a cue on a RUNNING deck loaded a new band cued to
+      // the groove it landed on, and now owes it the play. This is the first frame
+      // where the host reports the load, and so the first where a play request
+      // isn't swallowed as a no-op against its own stale state. See `resumingCue`.
+      //
+      // Ahead of the branches below for the same reason as `restoringCue`: the
+      // silence it is waiting on is this deck's own doing, and must not be read as
+      // an instruction to lift the arm.
+      // `!state.stopped` and not merely `!state.playing`: a STOP arrives as a
+      // frame that is also silent, and this branch sits ahead of the one that
+      // brakes the motor — so without the guard a stop landing in the wait window
+      // would be answered with the play the cue was owed, and the deck would take
+      // itself off its own rest. The stop branch below clears the flag instead.
+      if (resumingCue && !state.stopped && !state.playing) {
+        resumingCue = false;
+        syncTransport();
+      }
+
       if (state.stopped) {
         // A STOP is a stop, whoever asked for it: the arm comes off the record and
         // back to its rest, and the platter brakes. This is the only thing that
@@ -1051,6 +1109,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         parked = true;
         pendingPlay = false;
         restoringCue = false;
+        // A stop outranks a cue that has not landed yet: the arm is on its rest
+        // now, so the play it was owed is no longer owed.
+        resumingCue = false;
       } else if (state.playing && !wasPlaying && !restoringCue) {
         // Sound started, however it was started (the lever, START, the spacebar,
         // the next track). Everything that could be stopping it is therefore not.
