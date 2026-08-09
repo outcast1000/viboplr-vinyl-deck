@@ -1723,6 +1723,103 @@ describe("the cue magnifier", () => {
     expect(deck.classList.contains("motor-off")).toBe(true);
   });
 
+  /**
+   * A stop parks the arm ONCE.
+   *
+   * These four cover the end-of-queue dead deck: the host stops when the last
+   * track ends and stays stopped until playback actually resumes, so a stop
+   * branch that re-asserted the mechanisms every frame pinned every control shut
+   * for as long as the queue was empty. Each control is asserted across several
+   * frames, because one frame is exactly what the old code got right.
+   */
+  function stoppedDeck() {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: false, stopped: true, currentIndex: 0 }));
+    return { ...h, v, deck };
+  }
+
+  /** Keep the host stopped, as it is until playback resumes. */
+  function stillStopped(v: ReturnType<typeof stoppedDeck>["v"], from: number, to: number) {
+    for (let t = from; t <= to; t += 16) {
+      v.frame(makeState({ timeMs: t, playing: false, stopped: true, currentIndex: 0 }));
+    }
+  }
+
+  it("parks the arm on a stop", () => {
+    const { deck } = stoppedDeck();
+    expect(deck.classList.contains("lifted")).toBe(true);
+    expect(deck.classList.contains("motor-off")).toBe(true);
+  });
+
+  it("lets START spin the platter again on a stopped deck", () => {
+    // Was dead: START cleared motorOff and the very next frame set it back.
+    const { v, deck } = stoppedDeck();
+    (deck.querySelector(".start") as HTMLElement).click();
+    stillStopped(v, 32, 200);
+    expect(deck.classList.contains("motor-off")).toBe(false);
+  });
+
+  it("lets the lever put the needle down on a stopped deck, in ONE click", () => {
+    // Was dead twice over: the frame loop re-parked the arm, and the lever only
+    // unparked on the way UP, so from a parked arm it took three clicks.
+    const { v, deck } = stoppedDeck();
+    (deck.querySelector(".lever") as HTMLElement).click();
+    stillStopped(v, 32, 200);
+    expect(deck.classList.contains("lifted")).toBe(false);
+  });
+
+  it("keeps a cue on a stopped deck instead of snapping the arm home", () => {
+    // The reported symptom. The cue itself always fired — it was the arm coming
+    // back to the rest a frame later that made it look refused.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: false, stopped: true, currentIndex: 0 }));
+    const arm = deck.querySelector(".arm") as HTMLElement;
+    // Parked by the stop, so this IS the rest angle — the place the bug sent the
+    // arm back to.
+    const restDeg = arm.style.getPropertyValue("--deg");
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    expect(h.loadQueueIndex).toHaveBeenCalledTimes(1);
+    const [, cuedSecs] = h.loadQueueIndex.mock.calls[0] as [number, number];
+
+    // Frames as the host would now report them: that entry current, cued to where
+    // the needle landed. It is still `stopped` — it has nothing to play and says
+    // so — which is precisely the state the arm used to be yanked home in.
+    for (let t = 32; t <= 240; t += 16) {
+      v.frame(makeState({ timeMs: t, playing: false, stopped: true, currentIndex: 4, positionSecs: cuedSecs }));
+    }
+    const after = arm.style.getPropertyValue("--deg");
+    expect(after).not.toBe(restDeg);
+    // And on the groove that was aimed at, not merely somewhere off the rest.
+    const want = armAngleDeg(
+      positionToRadius(bandsSL, 4, cuedSecs, geoSL),
+      geoSL,
+      buildArmMount(geoSL, SKINS.sl1200.arm),
+    );
+    expect(parseFloat(after)).toBeCloseTo(want, 1);
+  });
+
+  it("still parks on a SECOND stop after the deck was operated", () => {
+    // The edge must keep firing. A rising-edge check that latched would park once
+    // per session and never again.
+    const { v, deck } = stoppedDeck();
+    (deck.querySelector(".lever") as HTMLElement).click();
+    stillStopped(v, 32, 120);
+    expect(deck.classList.contains("lifted")).toBe(false);
+
+    v.frame(makeState({ timeMs: 200, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 216, playing: false, stopped: true, currentIndex: 0 }));
+    expect(deck.classList.contains("lifted")).toBe(true);
+  });
+
   it("leaves a PLAYING deck playing when cued", () => {
     // The restore must be conditional. A cue on a running deck has always just
     // worked, and re-asserting a pause there would stop the music.

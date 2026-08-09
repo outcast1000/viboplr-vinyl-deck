@@ -2170,6 +2170,10 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		/** Previous frame's `playing`, so the flags can be cleared on the rising edge
 		*  rather than the level. See frame(). */
 		let wasPlaying = false;
+		/** Previous frame's `stopped`, for the same reason — a stop parks the arm once
+		*  rather than pinning every mechanism for as long as the host stays stopped.
+		*  See the stop branch in frame(). */
+		let wasStopped = false;
 		/**
 		* The deck has asked for playback and the host hasn't answered yet.
 		*
@@ -2720,7 +2724,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				deck.querySelector(".head").addEventListener("pointerdown", onDown);
 				lever.addEventListener("click", () => {
 					armUp = !armUp;
-					if (armUp) parked = false;
+					parked = false;
 					syncTransport();
 				});
 				deck.querySelector(".start")?.addEventListener("click", () => {
@@ -2760,7 +2764,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					resumingCue = false;
 					syncTransport();
 				}
-				if (state.stopped) {
+				if (state.stopped && !wasStopped) {
 					motorOff = true;
 					armUp = true;
 					parked = true;
@@ -2774,6 +2778,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					pendingPlay = false;
 				} else if (!state.playing && !motorOff && !parked && !pendingPlay) armUp = true;
 				wasPlaying = state.playing;
+				wasStopped = state.stopped;
 				wroteLifted = cssClass(deck, "lifted", armUp || parked, wroteLifted);
 				wroteMotorOff = cssClass(deck, "motor-off", motorOff, wroteMotorOff);
 				rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;

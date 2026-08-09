@@ -232,6 +232,11 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    *  rather than the level. See frame(). */
   let wasPlaying = false;
 
+  /** Previous frame's `stopped`, for the same reason — a stop parks the arm once
+   *  rather than pinning every mechanism for as long as the host stays stopped.
+   *  See the stop branch in frame(). */
+  let wasStopped = false;
+
   /**
    * The deck has asked for playback and the host hasn't answered yet.
    *
@@ -1055,7 +1060,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // drag should not fire it.
       lever.addEventListener("click", () => {
         armUp = !armUp;
-        if (armUp) parked = false;
+        // EITHER WAY, not only on the way up. You cannot raise or lower a tonearm
+        // that is still clipped to its rest, so operating the lever at all takes
+        // it off. Guarded on `armUp` it took three clicks to get the needle down
+        // from a parked arm — down (still parked, so still drawn lifted), up
+        // (unparked), down — which was invisible while the stop branch was
+        // re-parking every frame and became the first thing you hit once it
+        // wasn't.
+        parked = false;
         syncTransport();
       });
 
@@ -1153,10 +1165,27 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         syncTransport();
       }
 
-      if (state.stopped) {
+      if (state.stopped && !wasStopped) {
         // A STOP is a stop, whoever asked for it: the arm comes off the record and
         // back to its rest, and the platter brakes. This is the only thing that
         // parks the arm, which is why the deck's own START/STOP doesn't.
+        //
+        // ON THE RISING EDGE, NOT THE LEVEL — the same distinction, and for the
+        // same reason, as the `playing` branch below. As a level check this
+        // re-asserted all three mechanisms on every frame for as long as the host
+        // stayed stopped, and the host stays stopped until playback actually
+        // resumes (`stopped` clears only on the rising edge of `playing`). So at
+        // the end of a queue the deck went dead: the lever set `armUp` and the
+        // next frame set it back, START/STOP set `motorOff` and the next frame set
+        // it back — along with the `pendingPlay` that would have covered the wait
+        // — and a cue drag re-parked the arm the moment the hand let go, which
+        // looked like the drag being refused. It wasn't: the cue had already been
+        // sent and taken.
+        //
+        // A stop parks the arm once. After that the deck is a deck again: press
+        // START and the platter spins, drop the lever and the needle sits in the
+        // groove of a record that isn't turning. Both are ordinary states of the
+        // real object, and neither is something the host needs to agree to first.
         motorOff = true;
         armUp = true;
         parked = true;
@@ -1194,6 +1223,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         armUp = true;
       }
       wasPlaying = state.playing;
+      wasStopped = state.stopped;
 
       // THE ARM IS UP IF SOMETHING RAISED IT — the lever, or a stop that sent it
       // home. A stopped MOTOR does not: the needle stays in the groove of a record
