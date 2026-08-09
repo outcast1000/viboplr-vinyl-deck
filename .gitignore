@@ -2,3 +2,7 @@ node_modules/
 dist/
 vinyl-deck.zip
 .DS_Store
+# Git worktrees of this repo are created here. They are checkouts, not content:
+# committing one embeds a repository inside this one, and `git add -A` will do
+# exactly that unless told otherwise.
+.claude/

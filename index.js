@@ -1,5 +1,557 @@
 var __viboplrPlugin = (function(exports) {
 	Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+	//#region src/sounds.ts
+	/**
+	* The switch list, in the order a settings panel should show it: the continuous
+	* beds, then the needle, then the controls. Labels live here so the harness and
+	* the eventual settings panel cannot disagree about what a voice is called.
+	*/
+	var VOICES = [
+		{
+			id: "motor",
+			label: "Platter motor",
+			hint: "Rumble and the spin-up / spin-down sag"
+		},
+		{
+			id: "hiss",
+			label: "Groove hiss",
+			hint: "Surface noise while the needle is down"
+		},
+		{
+			id: "crackle",
+			label: "Crackle",
+			hint: "Occasional pops"
+		},
+		{
+			id: "drop",
+			label: "Needle drop",
+			hint: "The stylus meeting the groove"
+		},
+		{
+			id: "lift",
+			label: "Cue lift",
+			hint: "The lever taking it off again"
+		},
+		{
+			id: "scrape",
+			label: "Cue scrape",
+			hint: "Dragging the headshell across a turning record"
+		},
+		{
+			id: "band",
+			label: "Track ticks",
+			hint: "Crossing the land between tracks"
+		},
+		{
+			id: "runout",
+			label: "Run-out",
+			hint: "The tick at the end of the pressing"
+		},
+		{
+			id: "transport",
+			label: "START/STOP",
+			hint: "The transport switch"
+		},
+		{
+			id: "speed",
+			label: "33 / 45 buttons",
+			hint: "The speed switches"
+		},
+		{
+			id: "detent",
+			label: "Pitch detent",
+			hint: "The click at 0%"
+		}
+	];
+	/**
+	* Is this voice on?
+	*
+	* ABSENT MEANS ON, which is what makes adding a twelfth noise later a one-line
+	* change instead of a migration: stored settings written before it existed
+	* simply don't mention it. The master switch is still the gate above it, so
+	* "on" here only ever means "not individually silenced".
+	*/
+	function voiceOn(s, id) {
+		return s.enabled && s.voices[id] !== false;
+	}
+	var DEFAULT_SOUND_SETTINGS = {
+		enabled: false,
+		level: .5,
+		voices: {
+			hiss: false,
+			crackle: false
+		}
+	};
+	/**
+	* The rumble bed, as a function of platter velocity (1 = 33⅓).
+	*
+	* The tone's pitch is proportional to velocity and nothing else, which is the
+	* whole spin-down effect: as the brake takes hold the pitch sags to nothing.
+	* That is what a slowing record sounds like, and it falls out of the deck's
+	* existing eased `spinVel` for free — no envelope to hand-author, and a
+	* spin-down interrupted halfway by START sounds right without a special case.
+	*
+	* Gain rises faster than linearly so a platter creeping at 5% is inaudible
+	* rather than a quiet hum that never quite stops.
+	*/
+	function rumbleParams(vel) {
+		const v = Math.max(0, Math.min(2, vel));
+		return {
+			cutoffHz: 35 + 80 * v,
+			toneHz: 74 * v,
+			gain: .065 * v * v
+		};
+	}
+	/**
+	* The motor tone's level.
+	*
+	* Held well under the rumble's: a pitched component is far more noticeable than
+	* broadband noise at equal gain, and this one runs continuously under music the
+	* user chose. Loud enough to sag audibly when the brake bites, and no louder.
+	*/
+	var TONE_GAIN = .013;
+	/**
+	* Groove hiss level. Silent unless the needle is actually in the groove AND the
+	* record is turning — a stylus resting on a stopped record makes no noise, which
+	* is the difference between the cue lever and START/STOP that the deck spends so
+	* much effort keeping distinct.
+	*/
+	function surfaceGain(vel, needleDown) {
+		if (!needleDown) return 0;
+		return .055 * Math.max(0, Math.min(1.5, vel));
+	}
+	/**
+	* Pops per second. Scaled by velocity for the same reason as the hiss, and kept
+	* deliberately sparse: crackle reads as "a record" at a few per second and as a
+	* fault above that.
+	*/
+	function crackleRate(vel, needleDown) {
+		if (!needleDown) return 0;
+		return 3.5 * Math.max(0, Math.min(1.5, vel));
+	}
+	/**
+	* The cue scrape, from the drag speed in px/sec.
+	*
+	* Both terms saturate. A hand can flick the headshell faster than any real
+	* stylus could survive, and without a ceiling the sound would keep getting
+	* louder and brighter past anything a record does.
+	*/
+	function scrapeParams(speedPxPerSec) {
+		const s = Math.max(0, speedPxPerSec);
+		return {
+			gain: Math.min(.22, s / 4e3),
+			centerHz: 260 + Math.min(1400, s * 1.6)
+		};
+	}
+	/**
+	* Every switch on the deck is the same gesture with a different mass behind it,
+	* so they are one spec table rather than five functions. START/STOP is a big
+	* stiff switch with a plinth behind it; the speed buttons are small and dry; the
+	* fader detent is a tiny sprung ball; the band tick and the run-out are the
+	* stylus crossing land, which is not a switch at all and so is quieter and
+	* duller than any of them.
+	*/
+	var CLICKS = {
+		transport: {
+			centerHz: 1900,
+			q: 1.1,
+			durMs: 16,
+			gain: .3,
+			thumpHz: 92
+		},
+		speed: {
+			centerHz: 3100,
+			q: 1.6,
+			durMs: 9,
+			gain: .2
+		},
+		detent: {
+			centerHz: 4800,
+			q: 2.4,
+			durMs: 6,
+			gain: .13
+		},
+		band: {
+			centerHz: 1700,
+			q: 1.8,
+			durMs: 7,
+			gain: .1
+		},
+		runout: {
+			centerHz: 1150,
+			q: 1.5,
+			durMs: 11,
+			gain: .14
+		}
+	};
+	/** The silent object. Same shape, no context, no cost. */
+	function silentSounds() {
+		return {
+			setSettings() {},
+			frame() {},
+			drop() {},
+			lift() {},
+			click() {},
+			scrape() {},
+			endScrape() {},
+			destroy() {}
+		};
+	}
+	/** Two seconds of white noise, generated once and shared by every voice. */
+	function noiseBuffer(ctx) {
+		const len = Math.floor(ctx.sampleRate * 2);
+		const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+		const d = buf.getChannelData(0);
+		for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+		return buf;
+	}
+	function createDeckSounds(out, initial = {}) {
+		if (!out) return silentSounds();
+		const ctx = out.context;
+		let settings = {
+			...DEFAULT_SOUND_SETTINGS,
+			...initial,
+			voices: {
+				...DEFAULT_SOUND_SETTINGS.voices,
+				...initial.voices ?? {}
+			}
+		};
+		let destroyed = false;
+		const noise = noiseBuffer(ctx);
+		const master = ctx.createGain();
+		master.gain.value = 0;
+		master.connect(out.destination);
+		const rumbleSrc = ctx.createBufferSource();
+		rumbleSrc.buffer = noise;
+		rumbleSrc.loop = true;
+		const rumbleFilter = ctx.createBiquadFilter();
+		rumbleFilter.type = "lowpass";
+		const rumbleGain = ctx.createGain();
+		rumbleGain.gain.value = 0;
+		rumbleSrc.connect(rumbleFilter).connect(rumbleGain).connect(master);
+		rumbleSrc.start();
+		const tone = ctx.createOscillator();
+		tone.type = "triangle";
+		tone.frequency.value = 0;
+		const toneGain = ctx.createGain();
+		toneGain.gain.value = 0;
+		tone.connect(toneGain).connect(master);
+		tone.start();
+		const hissSrc = ctx.createBufferSource();
+		hissSrc.buffer = noise;
+		hissSrc.loop = true;
+		const hissFilter = ctx.createBiquadFilter();
+		hissFilter.type = "highpass";
+		hissFilter.frequency.value = 1400;
+		const hissGain = ctx.createGain();
+		hissGain.gain.value = 0;
+		hissSrc.connect(hissFilter).connect(hissGain).connect(master);
+		hissSrc.start();
+		const scrapeSrc = ctx.createBufferSource();
+		scrapeSrc.buffer = noise;
+		scrapeSrc.loop = true;
+		const scrapeFilter = ctx.createBiquadFilter();
+		scrapeFilter.type = "bandpass";
+		scrapeFilter.Q.value = .9;
+		scrapeFilter.frequency.value = 400;
+		const scrapeGain = ctx.createGain();
+		scrapeGain.gain.value = 0;
+		scrapeSrc.connect(scrapeFilter).connect(scrapeGain).connect(master);
+		scrapeSrc.start();
+		/** Short ramp to a target — `setTargetAtTime` never quite arrives, and a
+		*  bed that never quite reaches zero is a bed that hisses forever. */
+		function ramp(p, to, secs = .04) {
+			const t = ctx.currentTime;
+			p.cancelScheduledValues(t);
+			p.setValueAtTime(p.value, t);
+			p.linearRampToValueAtTime(to, t + secs);
+		}
+		function applyMaster() {
+			ramp(master.gain, settings.enabled ? Math.max(0, Math.min(1, settings.level)) : 0, .08);
+		}
+		applyMaster();
+		/**
+		* A filtered noise burst — the shape every one-shot here is made of.
+		*
+		* Built per trigger and left to be collected: these are milliseconds long and
+		* a pool would be more machinery than the thing it manages.
+		*/
+		function burst(o) {
+			if (destroyed || !settings.enabled) return;
+			const t = ctx.currentTime;
+			const dur = o.durMs / 1e3;
+			const src = ctx.createBufferSource();
+			src.buffer = noise;
+			const off = Math.random() * (noise.duration - dur - .01);
+			const f = ctx.createBiquadFilter();
+			f.type = o.type ?? "bandpass";
+			f.frequency.setValueAtTime(o.centerHz, t);
+			if (o.sweepToHz !== void 0) f.frequency.exponentialRampToValueAtTime(Math.max(20, o.sweepToHz), t + dur);
+			f.Q.value = o.q;
+			const g = ctx.createGain();
+			g.gain.setValueAtTime(o.gain, t);
+			g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
+			src.connect(f).connect(g).connect(master);
+			src.start(t, Math.max(0, off), dur + .02);
+			src.onended = () => {
+				src.disconnect();
+				f.disconnect();
+				g.disconnect();
+			};
+		}
+		/** A sine thump with a fast decay — the body under a drop or a big switch. */
+		function thump(freq, durMs, gain) {
+			if (destroyed || !settings.enabled) return;
+			const t = ctx.currentTime;
+			const dur = durMs / 1e3;
+			const osc = ctx.createOscillator();
+			osc.type = "sine";
+			osc.frequency.setValueAtTime(freq, t);
+			osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq * .55), t + dur);
+			const g = ctx.createGain();
+			g.gain.setValueAtTime(gain, t);
+			g.gain.exponentialRampToValueAtTime(1e-4, t + dur);
+			osc.connect(g).connect(master);
+			osc.start(t);
+			osc.stop(t + dur + .02);
+			osc.onended = () => {
+				osc.disconnect();
+				g.disconnect();
+			};
+		}
+		let lastFrameAt = null;
+		return {
+			setSettings(s) {
+				settings = {
+					...settings,
+					...s,
+					voices: {
+						...settings.voices,
+						...s.voices ?? {}
+					}
+				};
+				applyMaster();
+				if (!voiceOn(settings, "hiss")) ramp(hissGain.gain, 0, .1);
+				if (!voiceOn(settings, "scrape")) ramp(scrapeGain.gain, 0, .1);
+				if (!voiceOn(settings, "motor")) {
+					ramp(rumbleGain.gain, 0, .1);
+					ramp(toneGain.gain, 0, .1);
+				}
+			},
+			frame(vel, needleDown) {
+				if (destroyed) return;
+				const now = ctx.currentTime;
+				const dt = lastFrameAt === null ? 0 : Math.max(0, Math.min(.25, now - lastFrameAt));
+				lastFrameAt = now;
+				if (!settings.enabled) return;
+				if (voiceOn(settings, "motor")) {
+					const r = rumbleParams(vel);
+					rumbleFilter.frequency.value = r.cutoffHz;
+					rumbleGain.gain.value = r.gain;
+					tone.frequency.value = r.toneHz;
+					toneGain.gain.value = r.toneHz > 1 ? TONE_GAIN : 0;
+				}
+				hissGain.gain.value = voiceOn(settings, "hiss") ? surfaceGain(vel, needleDown) : 0;
+				if (voiceOn(settings, "crackle")) {
+					const rate = crackleRate(vel, needleDown);
+					if (rate > 0 && Math.random() < rate * dt) burst({
+						centerHz: 1400 + Math.random() * 2600,
+						q: 2.2,
+						durMs: 4 + Math.random() * 6,
+						gain: .02 + Math.random() * .09
+					});
+				}
+			},
+			drop() {
+				if (!voiceOn(settings, "drop")) return;
+				thump(74, 130, .26);
+				burst({
+					centerHz: 1500,
+					q: .7,
+					durMs: 95,
+					gain: .3,
+					type: "lowpass",
+					sweepToHz: 190
+				});
+			},
+			lift() {
+				if (!voiceOn(settings, "lift")) return;
+				burst({
+					centerHz: 900,
+					q: .9,
+					durMs: 55,
+					gain: .17,
+					sweepToHz: 1700
+				});
+			},
+			click(kind) {
+				if (!voiceOn(settings, kind)) return;
+				const c = CLICKS[kind];
+				burst({
+					centerHz: c.centerHz,
+					q: c.q,
+					durMs: c.durMs,
+					gain: c.gain
+				});
+				if (c.thumpHz) thump(c.thumpHz, 55, .14);
+			},
+			scrape(speedPxPerSec) {
+				if (destroyed) return;
+				if (!voiceOn(settings, "scrape")) {
+					ramp(scrapeGain.gain, 0, .05);
+					return;
+				}
+				const p = scrapeParams(speedPxPerSec);
+				scrapeFilter.frequency.value = p.centerHz;
+				ramp(scrapeGain.gain, p.gain, .02);
+			},
+			endScrape() {
+				if (destroyed) return;
+				ramp(scrapeGain.gain, 0, .08);
+			},
+			destroy() {
+				if (destroyed) return;
+				destroyed = true;
+				for (const s of [
+					rumbleSrc,
+					hissSrc,
+					scrapeSrc
+				]) try {
+					s.stop();
+				} catch {}
+				try {
+					tone.stop();
+				} catch {}
+				master.disconnect();
+			}
+		};
+	}
+	//#endregion
+	//#region src/soundSettings.ts
+	var current = {
+		...DEFAULT_SOUND_SETTINGS,
+		voices: { ...DEFAULT_SOUND_SETTINGS.voices }
+	};
+	var live = /* @__PURE__ */ new Set();
+	function deckSoundSettings() {
+		return current;
+	}
+	/**
+	* Apply a change everywhere at once.
+	*
+	* Merges rather than replaces `voices`, so a panel toggling one checkbox does
+	* not have to send the other ten back — and so a stored object written before a
+	* voice existed cannot silence it by omission.
+	*/
+	function setDeckSoundSettings(patch) {
+		current = {
+			...current,
+			...patch,
+			voices: {
+				...current.voices,
+				...patch.voices ?? {}
+			}
+		};
+		for (const s of live) s.setSettings(current);
+		return current;
+	}
+	/**
+	* Register a mounted deck's sound engine. Returns an unsubscriber for destroy().
+	*
+	* Applies the current settings immediately: a deck mounted after the user has
+	* been through the panel must not start at the defaults and correct itself on
+	* the first change.
+	*/
+	function registerDeckSounds(s) {
+		live.add(s);
+		s.setSettings(current);
+		return () => {
+			live.delete(s);
+		};
+	}
+	//#endregion
+	//#region src/settingsPanel.ts
+	var PANEL_ID = "vinyl-deck-sounds";
+	var STORAGE_KEY = "sounds";
+	/** `toggle` actions are addressed by id, so each voice needs its own. */
+	function voiceActionId(id) {
+		return `voice:${id}`;
+	}
+	var MASTER_ACTION = "sounds:enabled";
+	/**
+	* The new state carried by a toggle action.
+	*
+	* The host sends `{ value: !checked }`, NOT a bare boolean — see `PluginToggle`
+	* in the app's pluginViews. Reading it as a boolean is silently always false, so
+	* every toggle writes "off" and the switch springs back with nothing logged
+	* anywhere. That cost a live test to find, which is why it is a named function
+	* with this comment on it rather than an inline comparison.
+	*/
+	function toggleValue(data) {
+		return data?.value === true;
+	}
+	/**
+	* The panel, as view nodes.
+	*
+	* Pure so it can be asserted without a host: this is the only place the switches
+	* are named, and a toggle wired to the wrong action id looks identical in a
+	* screenshot to one that works.
+	*/
+	function buildSoundPanel(s) {
+		return {
+			type: "section",
+			title: "Sounds",
+			children: [{
+				type: "toggle",
+				label: "Deck sounds",
+				description: "The turntable's own noises — the motor, the needle, the switches. They play over your music, at your app volume.",
+				action: MASTER_ACTION,
+				checked: s.enabled
+			}, ...VOICES.map((v) => ({
+				type: "toggle",
+				label: v.label,
+				description: v.hint,
+				action: voiceActionId(v.id),
+				checked: s.enabled && s.voices[v.id] !== false
+			}))]
+		};
+	}
+	/**
+	* Wire the panel to the host and to storage.
+	*
+	* Storage is read once at activate and written on every change. The settings are
+	* a handful of booleans, so there is nothing to debounce and no reason for the
+	* panel to be the thing that owns them — `soundSettings.ts` is, and this only
+	* translates between it and the host.
+	*/
+	function installSoundPanel(api) {
+		const render = () => api.ui.setViewData(PANEL_ID, buildSoundPanel(deckSoundSettings()));
+		const persist = () => {
+			api.storage.set(STORAGE_KEY, deckSoundSettings()).catch((e) => {
+				console.error("Failed to save vinyl deck sound settings:", e);
+			});
+		};
+		api.ui.onAction(MASTER_ACTION, (data) => {
+			setDeckSoundSettings({ enabled: toggleValue(data) });
+			render();
+			persist();
+		});
+		for (const voice of VOICES) api.ui.onAction(voiceActionId(voice.id), (data) => {
+			setDeckSoundSettings({ voices: { [voice.id]: toggleValue(data) } });
+			render();
+			persist();
+		});
+		render();
+		api.storage.get(STORAGE_KEY).then((stored) => {
+			if (!stored) return;
+			setDeckSoundSettings({
+				enabled: stored.enabled === true,
+				voices: stored.voices ?? {}
+			});
+			render();
+		}).catch((e) => console.error("Failed to load vinyl deck sound settings:", e));
+	}
+	//#endregion
 	//#region src/geometry.ts
 	/**
 	* A real 12" LP, in millimetres of disc *radius*.
@@ -1647,6 +2199,26 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		*/
 		let restoringCue = false;
 		/**
+		* The deck's noises, and the state they are derived from.
+		*
+		* DERIVED FROM THE MECHANISMS, NOT FROM THE INPUTS. The obvious wiring is a
+		* sound per click handler, and it is wrong: `armUp` and `motorOff` are also
+		* set by frame()'s reconciler, which is how the deck answers a pause from the
+		* spacebar or the now-playing bar. Hang the drop off the lever's own click and
+		* the arm would come down silently whenever the music was resumed from
+		* anywhere else — the picture would move and the sound would not. Comparing
+		* the flags frame to frame catches every route into a mechanism, including the
+		* ones that have no click at all.
+		*
+		* Silent until a host grants audio; see `sounds.ts` on why the context is
+		* handed in rather than constructed.
+		*/
+		let sounds = createDeckSounds(null);
+		let unregisterSounds = null;
+		let sndArmUp = null;
+		let sndMotorOff = null;
+		let sndIndex = null;
+		/**
 		* A cue moved a RUNNING deck to another band, and the play that goes with it is
 		* still owed.
 		*
@@ -1976,7 +2548,19 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			anchorMagnifier(e.clientX, e.clientY);
 			deck.classList.add("dragging");
 			let zoomed = false;
+			let lastPt = {
+				x: e.clientX,
+				y: e.clientY,
+				t: e.timeStamp
+			};
 			const move = (ev) => {
+				const dt = Math.max(1, ev.timeStamp - lastPt.t);
+				sounds.scrape(Math.hypot(ev.clientX - lastPt.x, ev.clientY - lastPt.y) / dt * 1e3);
+				lastPt = {
+					x: ev.clientX,
+					y: ev.clientY,
+					t: ev.timeStamp
+				};
 				const r = clampToPressing(radiusAt(ev.clientX, ev.clientY), bands, geo);
 				last = radiusToPosition(bands, r);
 				wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
@@ -1989,6 +2573,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			};
 			const up = () => {
 				dragging = false;
+				sounds.endScrape();
 				deck.classList.remove("dragging");
 				deck.classList.remove("zoomed");
 				paintAt(1);
@@ -2111,6 +2696,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				host = h;
 				root = h.root;
 				size = h.size;
+				sounds = createDeckSounds(h.audio ?? null);
+				unregisterSounds = registerDeckSounds(sounds);
 				doc = root.ownerDocument;
 				const style = doc.createElement("style");
 				style.textContent = DECK_CSS;
@@ -2143,12 +2730,19 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				dots = deck.querySelector(".dots");
 				s33 = deck.querySelector(".s33");
 				s45 = deck.querySelector(".s45");
-				s33?.addEventListener("click", () => setRate(composeRate(1, decomposeRate(rate).percent)));
-				s45?.addEventListener("click", () => setRate(composeRate(RATE_45, decomposeRate(rate).percent)));
+				s33?.addEventListener("click", () => {
+					sounds.click("speed");
+					setRate(composeRate(1, decomposeRate(rate).percent));
+				});
+				s45?.addEventListener("click", () => {
+					sounds.click("speed");
+					setRate(composeRate(RATE_45, decomposeRate(rate).percent));
+				});
 				pitch = deck.querySelector(".pitch");
 				pval = deck.querySelector(".pval");
 				pitch?.addEventListener("pointerdown", onPitchDown);
 				deck.querySelector(".reset")?.addEventListener("click", () => {
+					sounds.click("detent");
 					setRate(decomposeRate(rate).basis);
 				});
 				unsubs.push(h.onResize((s) => {
@@ -2220,6 +2814,14 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					if (Math.abs(target - spinVel) < .001) spinVel = target;
 					spinAngle = (spinAngle + dt / 1800 * 360 * spinVel) % 360;
 					wroteSpin = styleTransform(spin, `rotate(${spinAngle}deg)`, wroteSpin);
+					const armedNow = armUp || parked;
+					if (sndArmUp !== null && armedNow !== sndArmUp) armedNow ? sounds.lift() : sounds.drop();
+					sndArmUp = armedNow;
+					if (sndMotorOff !== null && motorOff !== sndMotorOff) sounds.click("transport");
+					sndMotorOff = motorOff;
+					if (sndIndex !== null && state.currentIndex !== sndIndex) sounds.click("band");
+					sndIndex = state.currentIndex;
+					sounds.frame(spinVel, !armedNow);
 					if (dots) {
 						const reference = spinVel > .05 ? 1 : 0;
 						dotAngle = (dotAngle + dt / 1800 * 360 * (spinVel - reference)) % 360;
@@ -2233,6 +2835,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					u();
 				} catch {}
 				unsubs.length = 0;
+				unregisterSounds?.();
+				unregisterSounds = null;
+				sounds.destroy();
+				sounds = createDeckSounds(null);
+				sndArmUp = sndMotorOff = null;
+				sndIndex = null;
 			}
 		};
 	}
@@ -2241,6 +2849,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	function activate(api) {
 		api.visualizers.onMount("deck", () => createVinylDeckVisualizer("studio"));
 		api.visualizers.onMount("sl1200", () => createVinylDeckVisualizer("sl1200"));
+		installSoundPanel(api);
 	}
 	function deactivate() {}
 	//#endregion

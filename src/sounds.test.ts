@@ -10,6 +10,7 @@ import {
   scrapeParams,
   surfaceGain,
   voiceOn,
+  type DeckAudioOut,
   type DeckSoundSettings,
   type VoiceId,
 } from "./sounds";
@@ -87,7 +88,7 @@ function fakeCtx() {
 /** Sounds against the fake, with every voice on unless told otherwise. */
 function mounted(over: Partial<DeckSoundSettings> = {}) {
   const ctx = fakeCtx();
-  const s = createDeckSounds(ctx as unknown as AudioContext, {
+  const s = createDeckSounds({ context: ctx, destination: ctx.destination } as unknown as DeckAudioOut, {
     enabled: true,
     voices: Object.fromEntries(VOICES.map((v) => [v.id, true])),
     ...over,

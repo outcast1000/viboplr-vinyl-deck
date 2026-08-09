@@ -24,6 +24,8 @@ import {
   positionToRadius,
   radiusToPosition,
 } from "./geometry";
+import { type DeckSounds, createDeckSounds } from "./sounds";
+import { registerDeckSounds } from "./soundSettings";
 import { type BandPeaks, paintVinylSurface } from "./surface";
 import { DECK_CSS } from "./style";
 import { type DeckSkin, skinConfig } from "./skins";
@@ -259,6 +261,27 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    * clears the moment the host reports paused, so it can never latch.
    */
   let restoringCue = false;
+
+  /**
+   * The deck's noises, and the state they are derived from.
+   *
+   * DERIVED FROM THE MECHANISMS, NOT FROM THE INPUTS. The obvious wiring is a
+   * sound per click handler, and it is wrong: `armUp` and `motorOff` are also
+   * set by frame()'s reconciler, which is how the deck answers a pause from the
+   * spacebar or the now-playing bar. Hang the drop off the lever's own click and
+   * the arm would come down silently whenever the music was resumed from
+   * anywhere else — the picture would move and the sound would not. Comparing
+   * the flags frame to frame catches every route into a mechanism, including the
+   * ones that have no click at all.
+   *
+   * Silent until a host grants audio; see `sounds.ts` on why the context is
+   * handed in rather than constructed.
+   */
+  let sounds: DeckSounds = createDeckSounds(null);
+  let unregisterSounds: (() => void) | null = null;
+  let sndArmUp: boolean | null = null;
+  let sndMotorOff: boolean | null = null;
+  let sndIndex: number | null = null;
 
   /**
    * A cue moved a RUNNING deck to another band, and the play that goes with it is
@@ -694,7 +717,17 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     // for a cue jump, but under the cursor it reads as lag.
     deck.classList.add("dragging");
     let zoomed = false;
+    // Previous pointer sample, for the scrape's speed. Seeded from the press so
+    // the first move is measured against where the hand actually was.
+    let lastPt = { x: e.clientX, y: e.clientY, t: e.timeStamp };
     const move = (ev: PointerEvent) => {
+      // A stylus dragged across a turning record. Speed-dependent, which is why
+      // it is measured here rather than triggered as a one-shot: a slow careful
+      // cue should whisper and a flick should scrape.
+      const dt = Math.max(1, ev.timeStamp - lastPt.t);
+      sounds.scrape((Math.hypot(ev.clientX - lastPt.x, ev.clientY - lastPt.y) / dt) * 1000);
+      lastPt = { x: ev.clientX, y: ev.clientY, t: ev.timeStamp };
+
       const r = clampToPressing(radiusAt(ev.clientX, ev.clientY), bands, geo);
       last = radiusToPosition(bands, r);
       // Follow the pointer NOW rather than waiting for the release to be
@@ -728,6 +761,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     };
     const up = () => {
       dragging = false;
+      sounds.endScrape();
       deck.classList.remove("dragging");
       // Back to 1x. The origin is deliberately LEFT where it was: at scale 1 the
       // transform is the identity whatever its origin, so keeping it lets the
@@ -913,6 +947,13 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       root = h.root;
       size = h.size;
 
+      // Absent on any host older than the audio capability, and on a platform
+      // with no Web Audio — in both cases this yields a fully-formed silent
+      // engine, so nothing below needs a guard. Reading `h.audio` is what opens
+      // the device, so it is read once, here, rather than per frame.
+      sounds = createDeckSounds(h.audio ?? null);
+      unregisterSounds = registerDeckSounds(sounds);
+
       doc = root.ownerDocument;
       const style = doc.createElement("style");
       style.textContent = DECK_CSS;
@@ -1036,8 +1077,17 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // Changing speed KEEPS the fader where it is, as on a real deck — the
       // buttons pick the basis, the fader trims it, and pressing 45 doesn't reach
       // over and recentre the slider for you.
-      s33?.addEventListener("click", () => setRate(composeRate(1, decomposeRate(rate).percent)));
-      s45?.addEventListener("click", () => setRate(composeRate(R45, decomposeRate(rate).percent)));
+      // The speed buttons and the pitch reset are the only controls whose sound
+      // is hung off the click itself, because they change a VALUE rather than a
+      // mechanism — there is no flag for frame() to notice moving.
+      s33?.addEventListener("click", () => {
+        sounds.click("speed");
+        setRate(composeRate(1, decomposeRate(rate).percent));
+      });
+      s45?.addEventListener("click", () => {
+        sounds.click("speed");
+        setRate(composeRate(R45, decomposeRate(rate).percent));
+      });
 
       pitch = deck.querySelector(".pitch");
       pval = deck.querySelector(".pval");
@@ -1046,6 +1096,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // RESET is the quartz lock: back to exactly the selected speed, however far
       // the fader has been pushed. Keeps the basis, drops the trim.
       deck.querySelector(".reset")?.addEventListener("click", () => {
+        // The sprung ball dropping into the centre notch. A real SL-1200 clicks
+        // here, and it is the one thing that gives a fader a felt position.
+        sounds.click("detent");
         setRate(decomposeRate(rate).basis);
       });
 
@@ -1231,6 +1284,23 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         spinAngle = (spinAngle + (dt / 1800) * 360 * spinVel) % 360;
         wroteSpin = styleTransform(spin, `rotate(${spinAngle}deg)`, wroteSpin);
 
+        // HERE, and not earlier in frame(), because the beds are made of
+        // `spinVel` and this is the line that finishes settling it. Driving them
+        // from the target instead would make a spin-down an instant silence
+        // rather than the sag that IS the sound.
+        //
+        // First frame arms the trackers rather than firing: mounting a deck that
+        // is already playing must not sound like someone just dropped the needle.
+        const armedNow = armUp || parked;
+        if (sndArmUp !== null && armedNow !== sndArmUp) (armedNow ? sounds.lift() : sounds.drop());
+        sndArmUp = armedNow;
+        if (sndMotorOff !== null && motorOff !== sndMotorOff) sounds.click("transport");
+        sndMotorOff = motorOff;
+        // The stylus crossing the land between two bands.
+        if (sndIndex !== null && state.currentIndex !== sndIndex) sounds.click("band");
+        sndIndex = state.currentIndex;
+        sounds.frame(spinVel, !armedNow);
+
         // THE STROBE ILLUSION, which is the honest readout of the rate.
         //
         // On a real deck a mains-frequency lamp flashes on the platter's dots, so
@@ -1263,6 +1333,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         }
       }
       unsubs.length = 0;
+      // Before the engine goes, or the broadcast would keep a destroyed deck's
+      // voices in its set — two slots mount and unmount independently.
+      unregisterSounds?.();
+      unregisterSounds = null;
+      sounds.destroy();
+      sounds = createDeckSounds(null);
+      sndArmUp = sndMotorOff = null;
+      sndIndex = null;
     },
   };
 }

@@ -238,11 +238,30 @@ function noiseBuffer(ctx: AudioContext): AudioBuffer {
   return buf;
 }
 
+/**
+ * Where the deck is allowed to make a noise.
+ *
+ * Deliberately the same shape as the host's `PluginVisualizerAudio`, so mounting
+ * is `createDeckSounds(host.audio)` with nothing in between to get wrong.
+ *
+ * `destination` is NOT `context.destination`: the host owns a gain node tracking
+ * the app's volume and mute, and connecting past it would give the deck noises
+ * that ignore the volume slider and survive a mute. On the native mpv engine
+ * that is not a subtlety — music leaves through mpv and this leaves through the
+ * webview, so they are independent outputs and nothing else would tie them
+ * together.
+ */
+export interface DeckAudioOut {
+  context: AudioContext;
+  destination: AudioNode;
+}
+
 export function createDeckSounds(
-  ctx: AudioContext | null,
+  out: DeckAudioOut | null,
   initial: Partial<DeckSoundSettings> = {},
 ): DeckSounds {
-  if (!ctx) return silentSounds();
+  if (!out) return silentSounds();
+  const ctx = out.context;
 
   // `voices` merges rather than replaces, matching setSettings — otherwise
   // passing one switch at construction would silently drop the defaults for
@@ -260,7 +279,7 @@ export function createDeckSounds(
   // toggle are one ramp rather than a change every voice has to hear about.
   const master = ctx.createGain();
   master.gain.value = 0;
-  master.connect(ctx.destination);
+  master.connect(out.destination);
 
   // ---- continuous beds -------------------------------------------------
   // Started once and left running, their gains driven from frame(). Starting

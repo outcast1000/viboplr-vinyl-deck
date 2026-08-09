@@ -5,23 +5,29 @@
 // supplies live playback state; the deck's only writes are seek, play-queue-index
 // and play/pause.
 //
-// There are no settings. The deck used to ship three — a crop, a platter tilt and
-// a gap outline — plus a panel, storage and a live options object threaded down to
-// every mounted instance so a running deck could pick a change up mid-frame. All
-// of it is gone: none of the three answered a question a listener has, and two of
-// them made the deck less like a record rather than more.
+// THE SETTINGS PANEL IS BACK, for one reason, and the reason matters because the
+// old one was deleted on purpose. The deck used to ship three options — a crop, a
+// platter tilt and a gap outline — plus a panel, storage and a live options
+// object threaded into every mounted instance. All three were cosmetic, none
+// answered a question a listener has, and two made the deck less like a record.
 //
-// The two LIVERIES below are not a setting either, and that is the point. Each is
-// contributed as its own visualizer, so choosing between them happens in the
-// host's visualizer picker — the same list that offers the plain artwork. So a
-// second deck arrives without a panel, without storage, and without anything
-// mutating a running instance from underneath it.
+// Sounds are not that. There are eleven of them, they are independent, and they
+// are the first thing here a user might actively not want playing over their
+// music — which is a preference, not a look. They also cannot be expressed the
+// way the two LIVERIES below are: each livery is contributed as its own
+// visualizer, so choosing between them happens in the host's picker, and a
+// picker offers one choice from a list. "The needle drop but not the motor" is
+// not a thing you can pick.
+//
+// So the machinery comes back at its narrowest — see soundSettings.ts, which is
+// one value, one set of live instances and a broadcast, and nothing else.
 //
 // Built by vite into a single IIFE (see vite.config.ts), so the host's existing
 // `new Function("api", code)` loader is unchanged — the build step is purely
 // author-side.
 
 import type { ViboplrHostApi } from "../types/viboplr-host";
+import { installSoundPanel } from "./settingsPanel";
 import { createVinylDeckVisualizer } from "./visualizer";
 
 export function activate(api: ViboplrHostApi) {
@@ -29,6 +35,7 @@ export function activate(api: ViboplrHostApi) {
   // (Now Playing and fullscreen), and they must not share DOM.
   api.visualizers.onMount("deck", () => createVinylDeckVisualizer("studio"));
   api.visualizers.onMount("sl1200", () => createVinylDeckVisualizer("sl1200"));
+  installSoundPanel(api);
 }
 
 export function deactivate() {

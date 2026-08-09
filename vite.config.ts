@@ -38,5 +38,12 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Git worktrees of this repo live under .claude/worktrees/. Vitest's default
+    // glob walks into them and runs their copies of these same test files —
+    // against whatever commit that worktree is parked on. The result is a run
+    // that reports far more tests than the repo has and stays green on code
+    // nobody is editing, which is worse than useless: it is a green tick for a
+    // checkout you are not working in.
+    exclude: ["**/node_modules/**", "**/dist/**", "**/.claude/**"],
   },
 });

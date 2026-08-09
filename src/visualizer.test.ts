@@ -14,9 +14,10 @@ import type {
 } from "../types/viboplr-visualizer";
 import { createVinylDeckVisualizer, RATE_45 } from "./visualizer";
 import { armAngleDeg, buildArmMount, buildGeometry, layoutBands, positionToRadius } from "./geometry";
-import { SKINS } from "./skins";
+import { SKINS, type DeckSkin } from "./skins";
 import { PITCH_RANGE, composeRate } from "./pitch";
 import { SIDE_SECS, type Side, splitSides } from "./sides";
+import { resetDeckSoundSettings, setDeckSoundSettings } from "./soundSettings";
 
 const SIZE = 368;
 // Deliberately uneven, and deliberately UNDER one side's 22 minutes (1271s):
@@ -2253,5 +2254,135 @@ describe("a queue too long for one side", () => {
     ).not.toThrow();
     const deg = (root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
     expect(Number.isFinite(parseFloat(deg))).toBe(true);
+  });
+});
+
+/**
+ * The sound wiring.
+ *
+ * Asserted here rather than by ear because the two failure modes are silent to
+ * reasoning and obvious to a listener: firing a needle drop on the frame a
+ * playing deck mounts, and having lift and drop the wrong way round. Both look
+ * perfectly correct in the diff.
+ *
+ * A counting stand-in for Web Audio — jsdom has none — where a created source
+ * means a sound was made. The beds built at construction are discounted, so what
+ * remains is triggered noises only.
+ */
+function fakeAudio() {
+  const created: string[] = [];
+  const param = () => ({
+    value: 0,
+    setValueAtTime() {},
+    cancelScheduledValues() {},
+    setTargetAtTime() {},
+    exponentialRampToValueAtTime() {},
+    linearRampToValueAtTime(v: number) {
+      (this as { value: number }).value = v;
+    },
+  });
+  const node = (extra: Record<string, unknown> = {}) => ({
+    connect: (n: unknown) => n,
+    disconnect() {},
+    start() {},
+    stop() {},
+    ...extra,
+  });
+  const context = {
+    currentTime: 0,
+    sampleRate: 8000,
+    destination: node(),
+    createBuffer: (_c: number, len: number, sr: number) => ({
+      duration: len / sr,
+      getChannelData: () => new Float32Array(len),
+    }),
+    createGain: () => node({ gain: param() }),
+    createBiquadFilter: () => node({ type: "", frequency: param(), Q: param() }),
+    createBufferSource: () => {
+      created.push("source");
+      return node({ buffer: null, loop: false, onended: null });
+    },
+    createOscillator: () => {
+      created.push("osc");
+      return node({ type: "", frequency: param() });
+    },
+  };
+  return { created, audio: { context, destination: context.destination } };
+}
+
+describe("deck sounds", () => {
+  afterEach(() => resetDeckSoundSettings());
+
+  /** A deck mounted against a host that grants audio, with sounds switched on. */
+  function audible(skin: DeckSkin = "sl1200") {
+    const fake = fakeAudio();
+    setDeckSoundSettings({ enabled: true, voices: { motor: true, drop: true, lift: true } });
+    const h = makeHost({ audio: fake.audio } as unknown as Partial<PluginVisualizerHost>);
+    const v = createVinylDeckVisualizer(skin);
+    v.mount(h.host);
+    return { ...h, v, fake };
+  }
+
+  it("makes no sound on the frame it mounts", () => {
+    // The trackers arm on the first frame rather than firing. Mounting a deck
+    // that is already playing must not sound like someone just dropped the
+    // needle — and this surface is mounted on every skin change and every time
+    // the fullscreen slot takes over from the Now Playing one.
+    const { v, fake } = audible();
+    fake.created.length = 0;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    expect(fake.created).toEqual([]);
+  });
+
+  it("lifts audibly when the music is paused from somewhere else", () => {
+    // The wiring is derived from the MECHANISMS, not from the deck's own
+    // controls. A pause from the spacebar raises the lever via frame()'s
+    // reconciler and never touches a click handler, so a sound hung off the
+    // lever's click would leave the arm rising in silence.
+    const { v, fake } = audible();
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    fake.created.length = 0;
+    v.frame(makeState({ timeMs: 16, playing: false, currentIndex: 0 }));
+    expect(fake.created.length).toBeGreaterThan(0);
+  });
+
+  it("drops when the needle goes back down, and stays quiet while it stays down", () => {
+    const { v, fake } = audible();
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: false, currentIndex: 0 }));
+    fake.created.length = 0;
+    v.frame(makeState({ timeMs: 32, playing: true, currentIndex: 0 }));
+    expect(fake.created.length).toBeGreaterThan(0);
+    fake.created.length = 0;
+    // Level, not edge: holding a state must not retrigger every frame.
+    for (let t = 48; t <= 200; t += 16) {
+      v.frame(makeState({ timeMs: t, playing: true, currentIndex: 0 }));
+    }
+    expect(fake.created).toEqual([]);
+  });
+
+  it("stays silent on a host that grants no audio", () => {
+    // Every older app, and any platform without Web Audio. The engine is silent
+    // rather than absent, so nothing in the deck needs a guard.
+    setDeckSoundSettings({ enabled: true });
+    const h = makeHost();
+    expect((h.host as { audio?: unknown }).audio).toBeUndefined();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    expect(() => {
+      v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+      v.frame(makeState({ timeMs: 16, playing: false, currentIndex: 0 }));
+    }).not.toThrow();
+  });
+
+  it("stops making noise once destroyed", () => {
+    // Two slots mount and unmount independently, so a destroyed deck left in the
+    // broadcast set would be a voice with no deck behind it.
+    const { v, fake } = audible();
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.destroy();
+    fake.created.length = 0;
+    setDeckSoundSettings({ enabled: true, voices: { drop: true } });
+    expect(fake.created).toEqual([]);
   });
 });

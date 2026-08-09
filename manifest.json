@@ -9,6 +9,10 @@
   "stability": "experimental",
   "autoEnable": false,
   "contributes": {
+    "settingsPanel": {
+      "id": "vinyl-deck-sounds",
+      "label": "Sounds"
+    },
     "visualizers": [
       {
         "id": "deck",
