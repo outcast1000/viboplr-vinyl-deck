@@ -1,4 +1,4 @@
-## Unreleased
+## 1.3.0
 
 - **Cueing a stopped deck no longer lets a moment of audio out.** Changing track
   was only expressible as "play this track", so cueing a paused or stopped deck
