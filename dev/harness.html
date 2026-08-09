@@ -71,6 +71,22 @@
       <div class="row"><label>playing</label><input id="playing" type="checkbox" checked /></div>
       <div class="row"><button id="remount">remount</button><button id="stop">press STOP</button></div>
       <div class="row"><label>arm r</label><code id="armr">-</code></div>
+
+      <hr style="width:100%;border:0;border-top:1px solid #2a2e35" />
+      <div class="row"><label>sounds</label><input id="snd" type="checkbox" /><code id="sndstate">off</code></div>
+      <div class="row"><label>level</label><input id="lvl" type="range" min="0" max="1" step="0.01" value="0.5" /><code id="lvlv">50%</code></div>
+      <div id="voices" style="display:flex;flex-direction:column;gap:2px;font-size:12px"></div>
+      <div class="row"><label>vel</label><code id="velv">1.00</code> <code id="needlev">down</code></div>
+      <div class="row" style="flex-wrap:wrap">
+        <button data-snd="drop">drop</button>
+        <button data-snd="lift">lift</button>
+        <button data-snd="transport">START/STOP</button>
+        <button data-snd="speed">33/45</button>
+        <button data-snd="detent">detent</button>
+        <button data-snd="band">band tick</button>
+        <button data-snd="runout">run-out</button>
+      </div>
+
       <pre id="log" style="white-space:pre-wrap;font-size:11px;opacity:.7"></pre>
     </div>
 
@@ -78,6 +94,7 @@
       import { createVinylDeckVisualizer } from "/src/visualizer.ts";
       import { buildGeometry, layoutBands, positionToRadius } from "/src/geometry.ts";
       import { splitSides, sideAt } from "/src/sides.ts";
+      import { createDeckSounds, DEFAULT_SOUND_SETTINGS, VOICES } from "/src/sounds.ts";
 
       const slot = document.getElementById("slot");
       let viz = null;
@@ -130,6 +147,12 @@
             setRate: (r) => { state.rate = r; log(`setRate ${r.toFixed(3)}`); },
           },
         });
+        // Audition hooks for the controls that leave no state class behind — the
+        // speed buttons and the pitch reset change a value, not a mechanism, so
+        // there is nothing for driveSounds() to observe.
+        for (const [sel, kind] of [[".s33", "speed"], [".s45", "speed"], [".reset", "detent"]]) {
+          root.querySelector(sel)?.addEventListener("click", () => sounds.click(kind));
+        }
         window.__deckRoot = root;
       }
 
@@ -155,6 +178,7 @@
         const arm = root.querySelector(".arm");
         if (arm) q("armr").textContent = arm.style.getPropertyValue("--deg");
         if (window.__overlay) drawOverlay();
+        driveSounds(ms);
         raf = requestAnimationFrame(tick);
       }
 
@@ -196,6 +220,149 @@
         c.strokeStyle = "#ff0"; c.lineWidth = 2;
         c.beginPath(); c.arc(geo.cx, geo.cy, want, 0, Math.PI * 2); c.stroke();
       }
+
+      // ---- SOUND AUDITIONING ------------------------------------------------
+      //
+      // Deliberately wired from OUTSIDE the deck, by watching the state classes
+      // it already writes (`lifted`, `motor-off`, `dragging`) and by
+      // differentiating the platter's actual rotation. Nothing in src/visualizer.ts
+      // knows this exists yet.
+      //
+      // That is the point of doing it here first. The sounds are the part with
+      // taste in it and they need dozens of listens to get right; the wiring is
+      // mechanical. Auditioning against the real mechanisms — rather than against
+      // buttons that fake them — is what makes a spin-down sound like THIS deck's
+      // brake, and it costs no risk to the shipped visualizer while the numbers
+      // are still moving.
+      let audio = null;
+      let sounds = createDeckSounds(null); // silent until the user opts in
+      // `voices` copied, not shared: a shallow spread would alias the module's
+      // own default object and every checkbox here would edit it.
+      const settings = { ...DEFAULT_SOUND_SETTINGS, voices: { ...DEFAULT_SOUND_SETTINGS.voices } };
+
+      function enableAudio(on) {
+        settings.enabled = on;
+        q("sndstate").textContent = on ? "on" : "off";
+        if (!on) { sounds.setSettings(settings); return; }
+        // Constructed on the click, not on load: browsers refuse to start an
+        // AudioContext without a gesture, and one built too early lands
+        // suspended and silently plays nothing.
+        if (!audio) {
+          audio = new AudioContext();
+          sounds.destroy();
+          sounds = createDeckSounds(audio, settings);
+          log("audio context created");
+        }
+        audio.resume?.();
+        sounds.setSettings(settings);
+      }
+
+      q("snd").onchange = () => enableAudio(q("snd").checked);
+      q("lvl").oninput = () => {
+        settings.level = Number(q("lvl").value);
+        q("lvlv").textContent = `${(settings.level * 100).toFixed(0)}%`;
+        sounds.setSettings(settings);
+      };
+      // One checkbox per voice, built from the VOICES table so the harness can
+      // never drift out of step with what the module actually supports — a new
+      // noise appears here the moment it is declared.
+      for (const v of VOICES) {
+        const row = document.createElement("label");
+        row.className = "row";
+        row.style.cssText = "width:auto;gap:6px;opacity:1;cursor:pointer";
+        row.title = v.hint;
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = settings.voices[v.id] !== false;
+        cb.onchange = () => {
+          settings.voices = { ...settings.voices, [v.id]: cb.checked };
+          sounds.setSettings(settings);
+        };
+        const txt = document.createElement("span");
+        txt.textContent = v.label;
+        row.append(cb, txt);
+        q("voices").append(row);
+      }
+      for (const b of document.querySelectorAll("[data-snd]")) {
+        b.onclick = () => {
+          const k = b.dataset.snd;
+          if (k === "drop") sounds.drop();
+          else if (k === "lift") sounds.lift();
+          else sounds.click(k);
+        };
+      }
+
+      // Platter velocity, MEASURED rather than re-simulated. The deck eases its
+      // own spinVel and writes the result as a rotation; differentiating that is
+      // the only reading that cannot drift from what is on screen. (A copy of the
+      // easing here would be a second source of truth for the one number the
+      // spin-down sound is entirely made of.)
+      let lastAngle = null;
+      let lastAngleMs = 0;
+      let velSmooth = 1;
+      let wasLifted = null;
+      let wasMotorOff = null;
+      let wasDragging = false;
+      let lastIndex = state.index;
+
+      function readAngle() {
+        const el = root.querySelector(".spin");
+        const m = /rotate\(([-0-9.]+)deg\)/.exec(el?.style.transform || "");
+        return m ? Number(m[1]) : null;
+      }
+
+      function driveSounds(ms) {
+        const deck = root.querySelector(".deck");
+        if (!deck) return;
+
+        const a = readAngle();
+        if (a !== null && lastAngle !== null) {
+          const dt = ms - lastAngleMs;
+          if (dt > 0) {
+            // Shortest signed arc: the angle is taken mod 360 and would otherwise
+            // report a full backwards turn every wrap.
+            const d = ((a - lastAngle + 540) % 360) - 180;
+            const inst = (d * 5) / dt; // deck: dAngle = dt * 0.2 * vel
+            velSmooth += (inst - velSmooth) * 0.25;
+          }
+        }
+        if (a !== null) { lastAngle = a; lastAngleMs = ms; }
+        const vel = Math.max(0, velSmooth < 0.01 ? 0 : velSmooth);
+
+        const lifted = deck.classList.contains("lifted");
+        const needleDown = !lifted;
+        if (wasLifted !== null && lifted !== wasLifted) (lifted ? sounds.lift() : sounds.drop());
+        wasLifted = lifted;
+
+        const motorOff = deck.classList.contains("motor-off");
+        if (wasMotorOff !== null && motorOff !== wasMotorOff) sounds.click("transport");
+        wasMotorOff = motorOff;
+
+        // The stylus crossing an inter-track land.
+        if (state.index !== lastIndex) { sounds.click("band"); lastIndex = state.index; }
+
+        const dragging = deck.classList.contains("dragging");
+        if (!dragging && wasDragging) sounds.endScrape();
+        wasDragging = dragging;
+
+        q("velv").textContent = vel.toFixed(2);
+        q("needlev").textContent = needleDown ? "down" : "up";
+        sounds.frame(vel, needleDown);
+      }
+
+      // Drag speed for the scrape. Listened for on window because the deck takes
+      // pointer capture on the headshell — the events still bubble here, and a
+      // listener on the shadow root would miss every move that leaves the disc.
+      let lastPt = null;
+      window.addEventListener("pointermove", (e) => {
+        const now = performance.now();
+        if (lastPt) {
+          const dt = Math.max(1, now - lastPt.t);
+          const d = Math.hypot(e.clientX - lastPt.x, e.clientY - lastPt.y);
+          if (wasDragging) sounds.scrape((d / dt) * 1000);
+        }
+        lastPt = { x: e.clientX, y: e.clientY, t: now };
+      });
 
       q("skin").onchange = () => { mount(); };
       q("n").oninput = () => {
