@@ -113,6 +113,53 @@ describe("layoutBands", () => {
     expect(layoutBands([], geo)).toEqual([]);
   });
 
+  describe("pressed to the length of the music", () => {
+    // A side's worth of seconds. Kept local so these read as "what a full side
+    // holds" without dragging sides.ts into a geometry test.
+    const SIDE = 22 * 60;
+    const span = geo.rLeadIn - geo.rProgIn;
+
+    it("gives a single short track only the share of the record it earns", () => {
+      // THE POINT. Normalised to the queue's own total, one track always weighs
+      // 1 and fills the disc, so a three-minute single and a full side pressed
+      // identically. A record with one short track on it is mostly blank vinyl.
+      const three = layoutBands([180], geo, SIDE);
+      expect(three[0].outer).toBeCloseTo(geo.rLeadIn, 6);
+      expect(three[0].width).toBeCloseTo(span * (180 / SIDE), 6);
+      // ...and it stops well short of the run-out, leaving the rest unpressed.
+      expect(three[0].inner).toBeGreaterThan(geo.rProgIn + span * 0.5);
+    });
+
+    it("fills the record when the side is full", () => {
+      const full = layoutBands([SIDE], geo, SIDE);
+      expect(full[0].inner).toBeCloseTo(geo.rProgIn, 6);
+    });
+
+    it("never overruns, even for a track longer than a side", () => {
+      // sides.ts gives an over-long track a side to itself; it still has to fit
+      // the record it is on.
+      const over = layoutBands([SIDE * 3], geo, SIDE);
+      expect(over[0].inner).toBeCloseTo(geo.rProgIn, 6);
+    });
+
+    it("keeps the proportions between tracks", () => {
+      const half = layoutBands([300, 600], geo, SIDE);
+      expect(half[1].width / half[0].width).toBeCloseTo(2, 6);
+    });
+
+    it("still fills when nothing has a usable duration", () => {
+      // The proportions are invented anyway, so shrinking to an imagined running
+      // time would be inventing a second thing on top of the first.
+      const unknown = layoutBands([null, null], geo, SIDE);
+      expect(unknown[unknown.length - 1].inner).toBeCloseTo(geo.rProgIn, 6);
+    });
+
+    it("is opt-in — omitting the side length fills as before", () => {
+      const legacy = layoutBands([180], geo);
+      expect(legacy[0].inner).toBeCloseTo(geo.rProgIn, 6);
+    });
+  });
+
   it("never overflows the program area, even with many tracks", () => {
     // A 60-track queue wants more total gap (59 x 2px) than the program area
     // has (~104px). Without the MAX_GAP_SHARE cap the bands ran straight

@@ -19,15 +19,15 @@ import {
   armAngleDeg,
   buildArmMount,
   buildGeometry,
-  clampToProgram,
+  clampToPressing,
   layoutBands,
   positionToRadius,
   radiusToPosition,
 } from "./geometry";
-import { paintVinylSurface } from "./surface";
+import { type BandPeaks, paintVinylSurface } from "./surface";
 import { DECK_CSS } from "./style";
 import { type DeckSkin, skinConfig } from "./skins";
-import { type Side, sideAt, sideLabel, splitSides } from "./sides";
+import { SIDE_SECS, type Side, sideAt, sideLabel, splitSides } from "./sides";
 import {
   RATE_45 as R45,
   composeRate,
@@ -60,6 +60,22 @@ export { RATE_45 } from "./pitch";
 const SPINUP_TAU_MS = 220;
 const BRAKE_TAU_MS = 110;
 
+/**
+ * How far the deck magnifies while the headshell is being dragged.
+ *
+ * Chosen against the thing it exists to make readable. The painter lays grooves
+ * at a 1.15px pitch, so at 1x a band on a full twelve-track side is a handful of
+ * groove rings and its waveform texture is a suggestion; at 2.2x it is a dozen
+ * or so with visibly varying brightness, which is the difference between aiming
+ * at a track and aiming at a smudge.
+ *
+ * Not higher, because the loupe is anchored where you grabbed and the rest of the
+ * record has to stay recognisable around it — past roughly this the band you are
+ * leaving and the one you are heading for are both off-screen, and a cue you
+ * cannot aim in context is no easier than one you cannot see.
+ */
+export const CUE_ZOOM = 2.2;
+
 /** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
 const PLINTH_HTML =
   '<div class="plinth">' +
@@ -73,6 +89,12 @@ const PLINTH_HTML =
   '<button class="s33" type="button" aria-label="33 rpm">33</button>' +
   '<button class="s45" type="button" aria-label="45 rpm">45</button>' +
   "</div>" +
+  // THE TICK SCALE COMES FIRST, and the order is the whole point: both it and the
+  // fader are positioned with no z-index, so the later one paints on top. With the
+  // scale last, its red zero mark — which deliberately overhangs toward the slot —
+  // was drawn ACROSS the fader knob. On the real deck the graduations are printed
+  // on the plinth and the fader sits proud of them, so the scale belongs behind.
+  '<div class="pscale"></div>' +
   // The fader. `-` at the top and `+` at the bottom, the Technics way round:
   // you push it away from you to slow the record down. That's the one thing here
   // nobody can guess from the shape, so it's marked.
@@ -81,7 +103,6 @@ const PLINTH_HTML =
   '<span class="pmark pplus">+</span>' +
   '<i></i>' +
   "</div>" +
-  '<div class="pscale"></div>' +
   '<div class="pval"></div>' +
   '<button class="reset" type="button" aria-label="Reset pitch"></button>' +
   '<div class="rest"></div>' +
@@ -130,6 +151,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let host: PluginVisualizerHost;
   let root: ShadowRoot;
   let deck: HTMLElement;
+  let stage: HTMLElement;
+  let cueRing: HTMLElement;
+  let cueReadout: HTMLElement;
   let platter: HTMLElement;
   let spin: HTMLElement;
   let canvas: HTMLCanvasElement;
@@ -218,6 +242,22 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    */
   let pendingPlay = false;
 
+  /**
+   * A cue changed track on a deck that was not running, and the play it implied
+   * is being undone.
+   *
+   * `playQueueIndex` is the contract's only way to change track and it always
+   * starts playback, so cueing a paused or stopped deck to a different band would
+   * otherwise start the music and — via the rising edge in frame() — drop the arm
+   * and clear the motor. Moving the arm is not pressing play: on the desk you cue
+   * a stopped deck constantly and it stays stopped.
+   *
+   * While set, the rising edge is ignored (the sound is this deck's own doing, not
+   * an instruction) and the transport is re-asserted until the host agrees. It
+   * clears the moment the host reports paused, so it can never latch.
+   */
+  let restoringCue = false;
+
   /** Platter speed, eased toward its target so the deck spins up and brakes
    *  instead of snapping. In units where 1 is 33⅓. */
   let spinVel = 1;
@@ -278,6 +318,23 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let currentIndex = -1;
   const unsubs: (() => void)[] = [];
 
+  /**
+   * What the last pressing painted, so the magnifier can re-rasterise it at a
+   * higher resolution without re-running the layout.
+   *
+   * Re-pressing to repaint would work and would be wrong: `repress` recomputes
+   * the geometry, the bands and the arm mount, and a cue drag must not be able
+   * to move the pressing it is aiming at.
+   */
+  let lastPeaks: BandPeaks[] = [];
+  let lastEtch: string | null = null;
+  /** Titles of the tracks on the pressed side, for the cue readout. Side-relative,
+   *  like `bands`, so the two are indexed by the same number. */
+  let lastTitles: string[] = [];
+
+  /** Backing-store scale the canvas was last painted at. */
+  let paintedScale = 1;
+
   /** Lay out and repaint. Called on a queue or size change — never per frame. */
   function repress(tracks: readonly PluginVisualizerTrack[]) {
     // Only this side's tracks are pressed. Slicing here rather than at the call
@@ -294,7 +351,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     const discBox = Math.max(40, plinthW * cfg.platterScale);
     geo = buildGeometry(discBox);
     mountPoint = buildArmMount(geo, cfg.arm);
-    bands = layoutBands(durations, geo);
+    // SIDE_SECS is what makes the pressing take only the share of the record its
+    // running time earns, rather than always filling it — see layoutBands.
+    bands = layoutBands(durations, geo, SIDE_SECS);
 
     deck.style.setProperty("--plinth-w", `${plinthW}px`);
     deck.style.setProperty("--plinth-h", `${plinthH}px`);
@@ -311,7 +370,6 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       platter.style.transform =
         `translate(${cfg.offsetX * plinthW}px, ${cfg.offsetY * plinthH}px)`;
     }
-
     platter.style.width = `${geo.size}px`;
     platter.style.height = `${geo.size}px`;
 
@@ -383,7 +441,128 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     // Each band is grooved from its OWN track's waveform, where the host had one
     // cached. Absent peaks fall back to an even groove rather than a blank band,
     // so a queue of streaming tracks still looks like a record.
-    paintVinylSurface(canvas, geo, bands, onSide.map((t) => t.peaks), sideLabel(side));
+    lastPeaks = onSide.map((t) => t.peaks);
+    lastEtch = sideLabel(side);
+    lastTitles = onSide.map((t) => t.title);
+    // Unconditional, not paintAt(): the bands and the geometry just changed, so
+    // the canvas needs redrawing even when the resolution happens to match.
+    paint(1);
+  }
+
+  /**
+   * Re-rasterise the last pressing at `scale` device pixels per CSS pixel.
+   *
+   * Separate from repress() because the two answer different questions. A
+   * pressing changes WHAT is on the record; this changes only how finely it is
+   * drawn, and the cue magnifier must never be able to move the bands it is
+   * aiming at.
+   */
+  function paint(scale: number) {
+    paintedScale = scale;
+    paintVinylSurface(canvas, geo, bands, lastPeaks, lastEtch, scale);
+  }
+
+  /** Repaint only if the resolution really changed — a pointermove asks every
+   *  frame, and re-rasterising a whole record per frame would drop the drag. */
+  function paintAt(scale: number) {
+    if (scale !== paintedScale) paint(scale);
+  }
+
+  /**
+   * How close to the end of a track a cue may land, in seconds.
+   *
+   * The innermost groove of a band maps to exactly its duration — which is not a
+   * position IN that track, it is the boundary with the next one. Seeking there
+   * ends the track on the spot and the queue advances, so dropping the needle at
+   * the end of a track skipped it entirely; at the end of a SIDE the advance
+   * wrapped, which is the other half of why a drop there landed back at the
+   * start. `radiusToPosition` can even come back a hair PAST the duration on the
+   * float round-trip (209.00000000000006 for a 209s track), which is the same
+   * thing only more certain.
+   *
+   * A second is well under a pixel of band and inaudible as a difference, but it
+   * guarantees the drop lands inside the track that was aimed at.
+   */
+  const CUE_END_MARGIN_SECS = 1;
+
+  /**
+   * The position a cue should actually target, given where the needle landed.
+   *
+   * Used by BOTH the seek and the readout, so the number shown is the number
+   * committed — a readout promising 3:29 while the seek delivered something else
+   * would be worse than showing nothing.
+   */
+  function cueTarget(at: { index: number; positionSecs: number }): number {
+    const duration = bands[at.index]?.durationSecs ?? 0;
+    if (!(duration > 0)) return 0;
+    return Math.max(0, Math.min(at.positionSecs, duration - CUE_END_MARGIN_SECS));
+  }
+
+  /**
+   * mm:ss. Minutes only — a side is 22 minutes, so there is no hour case.
+   *
+   * ROUNDS rather than floors, unlike an elapsed-time display. This is a target,
+   * not a clock: the radius round-trips through the band maths and lands a
+   * fraction of a millisecond under, so flooring turns an exact 4:00 into "3:59"
+   * — a whole second of apparent error from a rounding artefact, on the one
+   * number the user is reading to aim by.
+   */
+  function clock(secs: number): string {
+    const s = Math.max(0, Math.round(secs));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  /**
+   * Say where the needle is, in the two terms the user is actually choosing in.
+   *
+   * The ring is the geometric answer — on a record the position IS the radius, so
+   * a circle at that radius names the groove exactly, including the part of it
+   * hidden under the headshell. The readout is the human one: a radius is not a
+   * track name, and "which song, how far in" is the question a cue is really
+   * asking. Neither is decoration; without them you are aiming an opaque block at
+   * something you cannot see.
+   */
+  function showCue(r: number) {
+    cueRing.style.width = `${(r * 2).toFixed(1)}px`;
+    cueRing.style.height = `${(r * 2).toFixed(1)}px`;
+
+    const at = radiusToPosition(bands, r);
+    if (!at) return;
+    const title = lastTitles[at.index] ?? "";
+    // The absolute queue number, not the side-relative one — it is what the
+    // playlist beside the deck is numbered by.
+    const n = (side?.start ?? 0) + at.index + 1;
+    cueReadout.textContent = `${n}. ${title}  ·  ${clock(cueTarget(at))}`;
+  }
+
+  /**
+   * Anchor the magnifier on the point being pressed, once, for the whole gesture.
+   *
+   * THE ANCHOR IS THE PRESS POINT, and that is forced rather than chosen. Under
+   * `scale(z)` about origin O a deck point X renders at `z·X + (1−z)·O`, so the
+   * point the cursor is over is `X = (R − (1−z)·O) / z` for a cursor at deck
+   * position R. Demanding that a stationary cursor keep naming the same groove as
+   * z changes — i.e. X = R for all z — gives exactly one solution: O = R. Anchor
+   * anywhere else and applying the zoom re-maps the cursor onto a different
+   * groove, so the needle slides out from under a hand that has not moved.
+   *
+   * Anchoring on the STYLUS was the first attempt and it fails twice over. It
+   * shifts the needle once when the zoom lands, per the algebra above; and if it
+   * is re-aimed each move to follow the needle it becomes a feedback loop, because
+   * the stylus is derived from the radius and the radius is measured against the
+   * platter as transformed by the anchor. Near the run-out, where the arm's angle
+   * changes fastest per unit of radius, that loop diverges — the radius climbs on
+   * its own until it clamps at the lead-in, which resolves to track 1 at 0:00. So
+   * "let go at the end of the last track" dropped the needle at the start of the
+   * side.
+   *
+   * Read from `deck`, which is never transformed, so this is measurable at any
+   * time without the zoom contaminating it.
+   */
+  function anchorMagnifier(clientX: number, clientY: number) {
+    const d = deck.getBoundingClientRect();
+    stage.style.transformOrigin =
+      `${(clientX - d.left).toFixed(1)}px ${(clientY - d.top).toFixed(1)}px`;
   }
 
   /**
@@ -438,20 +617,55 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     // it never happened. The motor is left alone: picking the arm up is not
     // touching START/STOP, and the drag ends in a play that starts it anyway.
     parked = false;
+    // Anchor the lens NOW, while nothing is transformed yet, and leave it there.
+    // The zoom itself waits for the first move; the anchor cannot, because the
+    // press point is the only point whose groove survives the zoom unchanged.
+    anchorMagnifier(e.clientX, e.clientY);
     // Kills the arm's tracking transition for the duration: a .22s ease is right
     // for a cue jump, but under the cursor it reads as lag.
     deck.classList.add("dragging");
+    let zoomed = false;
     const move = (ev: PointerEvent) => {
-      const r = clampToProgram(radiusAt(ev.clientX, ev.clientY), geo);
+      const r = clampToPressing(radiusAt(ev.clientX, ev.clientY), bands, geo);
       last = radiusToPosition(bands, r);
       // Follow the pointer NOW rather than waiting for the release to be
       // committed and echoed back by the host. The arm is the thing being
       // dragged, so it has to move with the hand; the host is told on release.
       arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+      showCue(r);
+
+      // ZOOM IN FOR THE DRAG. A cue is aimed at a band, and at a normal deck size
+      // a band on a full side is a few pixels of groove — you are choosing a
+      // track by pointing at something you cannot read. Magnifying for the length
+      // of the gesture makes the pressing legible exactly while it is being aimed
+      // at, and costs nothing the rest of the time.
+      //
+      // ON THE FIRST MOVE, not on the press: a press that never becomes a drag
+      // resolves nothing (see above), so zooming for it would flash the whole
+      // deck in and straight back out on every stray click of the headshell.
+      //
+      // The canvas is re-rasterised to match. Without that this would be a CSS
+      // upscale of a fixed bitmap — bigger grooves and no more detail, which is
+      // the opposite of the point.
+      //
+      // The lens itself was anchored on the press point back in onDown, and does
+      // not move again for the rest of the gesture — see anchorMagnifier for why
+      // that particular point and why nothing else will do.
+      if (!zoomed) {
+        zoomed = true;
+        deck.classList.add("zoomed");
+        paintAt(CUE_ZOOM);
+      }
     };
     const up = () => {
       dragging = false;
       deck.classList.remove("dragging");
+      // Back to 1x. The origin is deliberately LEFT where it was: at scale 1 the
+      // transform is the identity whatever its origin, so keeping it lets the
+      // zoom-out ease from where the lens actually was instead of jumping to the
+      // middle first.
+      deck.classList.remove("zoomed");
+      paintAt(1);
       target.removeEventListener("pointermove", move);
       target.removeEventListener("pointerup", up);
       target.removeEventListener("pointercancel", up);
@@ -461,8 +675,21 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // tonearm needs.
       // `last.index` is side-relative; the host speaks absolute queue indices.
       const queueIndex = (side?.start ?? 0) + last.index;
-      if (queueIndex === currentIndex) host.actions.seek(last.positionSecs);
-      else host.actions.playQueueIndex(queueIndex);
+      // `cueTarget`, not the raw position: the innermost groove of a band maps to
+      // exactly its duration, and seeking THERE ends the track instead of playing
+      // it. See CUE_END_MARGIN_SECS.
+      if (queueIndex === currentIndex) host.actions.seek(cueTarget(last));
+      else {
+        host.actions.playQueueIndex(queueIndex);
+        // MOVING THE ARM IS NOT PRESSING PLAY. Placing the needle somewhere sets
+        // where the deck is, not whether it is running — on the desk you cue a
+        // stopped deck all the time, and it stays stopped. But the contract has
+        // no "load this track without starting it": `playQueueIndex` is the only
+        // way to change track and it always starts. So when the deck was not
+        // running before the cue, the transport it just implied is undone on the
+        // frames that follow. See `restoringCue`.
+        restoringCue = motorOff || armUp;
+      }
     };
     try {
       target.setPointerCapture(e.pointerId);
@@ -584,7 +811,13 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       root.append(style);
 
       deck = doc.createElement("div");
-      deck.className = `deck lifted skin-${cfg.name}`;
+      // `reduce-motion` keeps the magnifier's travel out of the sheet; the zoom
+      // itself stays, because it is what makes a cue aimable rather than an
+      // embellishment. Set as a class because the shadow boundary the app's own
+      // reduced-motion guard cannot cross is the same one this sits behind.
+      deck.className =
+        `deck lifted skin-${cfg.name}` + (h.reducedMotion ? " reduce-motion" : "");
+      deck.style.setProperty("--cue-zoom", String(CUE_ZOOM));
       // What rotates matters more than that something rotates. The canvas is
       // nothing but concentric rings, so it is rotationally symmetric and
       // spinning it alone is INVISIBLE. The label (asymmetric art) and the
@@ -597,7 +830,15 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // furniture block is absent (not merely hidden) on a skin that has none —
       // so the bare deck's tree is exactly what it was, and the pointer-events
       // reasoning below keeps holding without a second case to check.
+      //
+      // `.stage` holds both and is the ONLY thing the cue magnifier scales. It
+      // has to be its own element: `.deck` carries `overflow: hidden`, and an
+      // element's transform applies after its own clip — scaling `.deck` would
+      // magnify the clipped picture and spill it across the rest of the view
+      // instead of cropping to the slot. With the scale one level in, `.deck`
+      // stays the frame and `.stage` moves behind it.
       deck.innerHTML =
+        '<div class="stage">' +
         (cfg.furniture ? PLINTH_HTML : "") +
         '<div class="platter">' +
         // Platter rim, with the stroboscope dots as their own element so they can
@@ -612,6 +853,12 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         '<div class="sheen"></div>' +
         '<div class="iris"></div>' +
         '<div class="hole"></div>' +
+        // WHERE THE NEEDLE ACTUALLY IS. The headshell is an opaque block that
+        // sits directly on top of the one groove it is reading, so the thing you
+        // are aiming is the thing you cannot see — and on a record the position
+        // IS the radius, so a ring at that radius states it completely. Lives in
+        // .platter (not .spin) so it stays put while the record turns under it.
+        '<div class="cue-ring"></div>' +
         '<div class="lever"><i></i></div>' +
         // Nested wrappers, one job each, because they need different transforms
         // AND different transitions: arm = tracking rotation (every frame),
@@ -623,9 +870,18 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         (cfg.furniture ? SARM_SVG : "") +
         '<div class="shadow"></div><div class="head"></div>' +
         "</div></div></div></div>" +
-        "</div>";
+        "</div>" +
+        "</div>" +
+        // OUTSIDE .stage on purpose: it is the one thing that must NOT magnify.
+        // The zoom exists to make the grooves bigger; blowing the label up with
+        // them would just push it off the deck, and a readout has no detail to
+        // reveal. So it stays put at a fixed size while the record grows.
+        '<div class="cue-readout"></div>';
       root.append(deck);
 
+      stage = deck.querySelector(".stage") as HTMLElement;
+      cueRing = deck.querySelector(".cue-ring") as HTMLElement;
+      cueReadout = deck.querySelector(".cue-readout") as HTMLElement;
       platter = deck.querySelector(".platter") as HTMLElement;
       spin = deck.querySelector(".spin") as HTMLElement;
       canvas = deck.querySelector("canvas") as HTMLCanvasElement;
@@ -705,6 +961,19 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // decide what to ask for, and what the transport classes are drawn from, so
       // letting them go stale over an empty queue would make the deck's first
       // click after one wrong.
+      // A cue moved the needle on a deck that was not running, and the play that
+      // `playQueueIndex` forced along with it is being taken back. Handled ahead
+      // of everything else so the rising edge below never sees it as a genuine
+      // start — the sound is this deck's own side effect, not an instruction.
+      // ONCE, on the edge where that play actually lands — not every frame while
+      // it is true. The host's `setPlaying` bridge is a toggle behind a
+      // compare-against-live-state guard, so a second request sent before it has
+      // re-rendered reads its own stale value and toggles playback back ON.
+      if (restoringCue) {
+        if (state.playing && !wasPlaying) syncTransport();
+        else if (!state.playing) restoringCue = false;
+      }
+
       if (state.stopped) {
         // A STOP is a stop, whoever asked for it: the arm comes off the record and
         // back to its rest, and the platter brakes. This is the only thing that
@@ -713,7 +982,8 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         armUp = true;
         parked = true;
         pendingPlay = false;
-      } else if (state.playing && !wasPlaying) {
+        restoringCue = false;
+      } else if (state.playing && !wasPlaying && !restoringCue) {
         // Sound started, however it was started (the lever, START, the spacebar,
         // the next track). Everything that could be stopping it is therefore not.
         //

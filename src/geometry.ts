@@ -143,10 +143,20 @@ export function gapAfter(bands: Band[], i: number): number {
  * bands are split evenly rather than collapsing to zero width. A partially
  * known list keeps the known proportions and gives the unknown tracks nothing,
  * which is the honest reading: we don't know how long they are.
+ *
+ * `sideSecs` is what a full side holds, and passing it makes the pressing take
+ * only the share of the record its RUNNING TIME earns. Without it the bands are
+ * normalised to the queue's own total and always fill the program area, so a
+ * three-minute single and a twenty-two-minute side press identically — a record
+ * with one short track on it is mostly blank vinyl, and drawing it full is
+ * drawing the wrong object. Omitted (or non-positive) keeps the fill-everything
+ * behaviour, which is still right when nothing has a usable duration and the
+ * proportions are invented anyway.
  */
 export function layoutBands(
   durations: (number | null | undefined)[],
   geo: VinylGeometry,
+  sideSecs?: number,
 ): Band[] {
   const n = durations.length;
   if (n === 0) return [];
@@ -159,7 +169,12 @@ export function layoutBands(
   const weights =
     total > 0 ? safe.map((d) => d / total) : safe.map(() => 1 / n);
 
-  const span = geo.rLeadIn - geo.rProgIn;
+  // How much of the program area this side's music actually earns. Capped at 1:
+  // a single track longer than a side gets one to itself (see sides.ts) and must
+  // still fit the record it is on.
+  const fill =
+    sideSecs && sideSecs > 0 && total > 0 ? Math.min(1, total / sideSecs) : 1;
+  const span = (geo.rLeadIn - geo.rProgIn) * fill;
   // Shrink the land rings if the queue is too dense to afford them, so the
   // pressing always ends exactly on the run-out instead of overrunning it.
   const gap =
@@ -233,6 +248,27 @@ export function positionToRadius(
 /** Clamp a radius to the playable program area. */
 export function clampToProgram(r: number, geo: VinylGeometry): number {
   return Math.max(geo.rProgIn, Math.min(geo.rLeadIn, r));
+}
+
+/**
+ * Clamp a radius to the part of the record that actually carries music.
+ *
+ * Distinct from `clampToProgram`, which clamps to the area a FULL side would
+ * occupy. Once a pressing takes only the share its running time earns, those two
+ * stop being the same thing: a short side ends well outside the run-out, and
+ * clamping to the geometry would let the needle be parked in blank vinyl that no
+ * track answers for.
+ *
+ * Falls back to the program area when there is nothing pressed, so an empty
+ * queue behaves as it always did.
+ */
+export function clampToPressing(
+  r: number,
+  bands: Band[],
+  geo: VinylGeometry,
+): number {
+  if (bands.length === 0) return clampToProgram(r, geo);
+  return Math.max(bands[bands.length - 1].inner, Math.min(bands[0].outer, r));
 }
 
 export interface ArmMount {

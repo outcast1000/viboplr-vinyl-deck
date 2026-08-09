@@ -77,14 +77,24 @@ var __viboplrPlugin = (function(exports) {
 	* bands are split evenly rather than collapsing to zero width. A partially
 	* known list keeps the known proportions and gives the unknown tracks nothing,
 	* which is the honest reading: we don't know how long they are.
+	*
+	* `sideSecs` is what a full side holds, and passing it makes the pressing take
+	* only the share of the record its RUNNING TIME earns. Without it the bands are
+	* normalised to the queue's own total and always fill the program area, so a
+	* three-minute single and a twenty-two-minute side press identically — a record
+	* with one short track on it is mostly blank vinyl, and drawing it full is
+	* drawing the wrong object. Omitted (or non-positive) keeps the fill-everything
+	* behaviour, which is still right when nothing has a usable duration and the
+	* proportions are invented anyway.
 	*/
-	function layoutBands(durations, geo) {
+	function layoutBands(durations, geo, sideSecs) {
 		const n = durations.length;
 		if (n === 0) return [];
 		const safe = durations.map((d) => typeof d === "number" && Number.isFinite(d) && d > 0 ? d : 0);
 		const total = safe.reduce((s, d) => s + d, 0);
 		const weights = total > 0 ? safe.map((d) => d / total) : safe.map(() => 1 / n);
-		const span = geo.rLeadIn - geo.rProgIn;
+		const fill = sideSecs && sideSecs > 0 && total > 0 ? Math.min(1, total / sideSecs) : 1;
+		const span = (geo.rLeadIn - geo.rProgIn) * fill;
 		const gap = n > 1 ? Math.min(geo.gap, span * MAX_GAP_SHARE / (n - 1)) : 0;
 		const usable = Math.max(0, span - gap * (n - 1));
 		const bands = [];
@@ -148,6 +158,22 @@ var __viboplrPlugin = (function(exports) {
 	function clampToProgram(r, geo) {
 		return Math.max(geo.rProgIn, Math.min(geo.rLeadIn, r));
 	}
+	/**
+	* Clamp a radius to the part of the record that actually carries music.
+	*
+	* Distinct from `clampToProgram`, which clamps to the area a FULL side would
+	* occupy. Once a pressing takes only the share its running time earns, those two
+	* stop being the same thing: a short side ends well outside the run-out, and
+	* clamping to the geometry would let the needle be parked in blank vinyl that no
+	* track answers for.
+	*
+	* Falls back to the program area when there is nothing pressed, so an empty
+	* queue behaves as it always did.
+	*/
+	function clampToPressing(r, bands, geo) {
+		if (bands.length === 0) return clampToProgram(r, geo);
+		return Math.max(bands[bands.length - 1].inner, Math.min(bands[0].outer, r));
+	}
 	function buildArmMount(geo, spec = ARM) {
 		const ang = spec.pivotAngleDeg * Math.PI / 180;
 		const distance = geo.rEdge * spec.pivotDistance;
@@ -198,11 +224,19 @@ var __viboplrPlugin = (function(exports) {
 	* Paint the record surface. Cheap enough to redraw on resize, but it only needs
 	* to run when the size or the pressing changes — never on a skin change, and
 	* never per animation frame (rotation is a CSS transform on a parent).
+	*
+	* `pixelScale` raises the BACKING STORE resolution without touching the layout:
+	* every coordinate here is still in `geo`'s CSS pixels, and the canvas element's
+	* CSS size is set by the caller. It exists for the cue-drag magnifier — CSS-
+	* scaling the deck stretches a fixed bitmap, which makes the grooves bigger and
+	* blurrier rather than more legible, and the whole point of zooming into a
+	* record is to read the waveform pressed into it. Re-rasterising at the zoomed
+	* size is what actually shows more.
 	*/
-	function paintVinylSurface(canvas, geo, bands, peaks, etch) {
+	function paintVinylSurface(canvas, geo, bands, peaks, etch, pixelScale = 1) {
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
-		const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+		const dpr = Math.min((window.devicePixelRatio || 1) * Math.max(1, pixelScale), 4);
 		canvas.width = Math.max(1, Math.round(geo.size * dpr));
 		canvas.height = Math.max(1, Math.round(geo.size * dpr));
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -243,8 +277,9 @@ var __viboplrPlugin = (function(exports) {
 				ring(gIn + .5, 1, white(.05));
 			}
 		});
-		ring(rProgIn - 1, 1.4, black(.95));
-		for (let r = rProgIn - 3; r > rDeadWax; r -= 3.2) ring(r, 1, white(.04));
+		const progEnd = bands.length > 0 ? bands[bands.length - 1].inner : rProgIn;
+		ring(progEnd - 1, 1.4, black(.95));
+		for (let r = progEnd - 3; r > rDeadWax; r -= 3.2) ring(r, 1, white(.04));
 		ring(rLabel + .5, 1, white(.09));
 		if (etch) {
 			const bandH = rProgIn - rLabel;
@@ -274,9 +309,6 @@ var __viboplrPlugin = (function(exports) {
   --pk: 1;
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: hidden;
   /* NO PERSPECTIVE, AND NO 3D ANYWHERE IN THE ARM. This is a top-down view of a
      record, so a radius on the disc IS a position in a track — and a perspective
@@ -287,6 +319,36 @@ var __viboplrPlugin = (function(exports) {
      a fixed 620px), which put the needle past the rim while paused. Height is
      carried by brightness and the shadow instead — see .lifted below. */
 }
+
+/* Everything the deck is made of, and the only thing the cue magnifier scales.
+   It exists so the zoom has somewhere to live that is INSIDE the clip: ".deck"
+   carries overflow:hidden, and a transform on an element applies after that
+   element's own clipping, so scaling ".deck" would blow the magnified picture
+   out across the rest of the view. One level in, ".deck" stays a fixed window
+   and the stage moves behind it.
+   The flex centring moved here with the children — the stage is out of flow
+   (absolute), so ".deck"'s own centring no longer reaches them. */
+.stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The origin is written per-frame by focusMagnifier(); this is only the value
+     before the first drag. --zoom is the whole animation. */
+  transform: scale(var(--zoom, 1));
+  transform-origin: 50% 50%;
+  transition: transform .22s var(--deck-ease, cubic-bezier(.22,.68,.25,1));
+}
+/* Only the SCALE is transitioned, and transform-origin deliberately is not: the
+   origin is rewritten on every pointermove, and easing it would make the deck
+   swim along behind the needle instead of pivoting about it. Changing the origin
+   alone re-renders without firing a transition, since the transform VALUE is
+   untouched. */
+.zoomed .stage { --zoom: var(--cue-zoom, 2.2); }
+/* The magnifier is an aid, not decoration, so it still zooms — but it arrives
+   without the travel. */
+.reduce-motion .stage { transition: none; }
 
 .platter {
   position: relative;
@@ -349,6 +411,57 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   background-size: cover; background-position: center;
   box-shadow: 0 0 0 1px rgba(0,0,0,.35), inset 0 0 0 calc(6px * var(--k)) rgba(0,0,0,.07);
 }
+/* THE CUE RING — where the needle is, stated as a groove.
+   The headshell is an opaque block that covers the exact groove it reads, so the
+   one thing you are aiming is the one thing hidden. On a record the position IS
+   the radius, so a circle at that radius names it completely: it emerges either
+   side of the shell, and it crosses the band boundaries so you can see which
+   track you are about to land in rather than inferring it.
+   Inside .platter but OUTSIDE .spin — it marks a place on the deck, not on the
+   record, so it must not turn with the grooves. Sized in JS from the live radius;
+   centred on the spindle by the margins. */
+.cue-ring {
+  position: absolute; left: 50%; top: 50%;
+  width: 0; height: 0;
+  margin: 0; translate: -50% -50%;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.92);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 0 calc(5px * var(--k)) rgba(255,255,255,.45);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .16s ease;
+  z-index: 16;
+}
+/* Only while cueing. The rest of the time it would be a HUD line drawn across a
+   record, which is the opposite of what this plugin is. */
+.dragging .cue-ring { opacity: 1; }
+
+/* THE CUE READOUT — the same answer in the terms you are actually choosing in.
+   A radius names a groove but not a song, and "which track, how far in" is what a
+   cue is really asking. Pinned to the bottom of the DECK and deliberately outside
+   .stage, so the magnifier cannot blow it up and shove it off the edge: the zoom
+   is there to enlarge grooves, and text has no detail to reveal. */
+.cue-readout {
+  position: absolute;
+  left: 50%; bottom: calc(10px * var(--pk));
+  translate: -50% 0;
+  max-width: 86%;
+  padding: calc(4px * var(--pk)) calc(10px * var(--pk));
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: color-mix(in srgb, var(--bg-primary) 78%, #000);
+  color: var(--text-primary, #fff);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 calc(2px * var(--pk)) calc(8px * var(--pk)) rgba(0,0,0,.5);
+  font: 600 calc(11px * var(--pk))/1.5 system-ui, sans-serif;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .16s ease;
+  z-index: 30;
+}
+.dragging .cue-readout { opacity: 1; }
+
 .hole {
   position: absolute; left: 50%; top: 50%; width: calc(11px * var(--k)); height: calc(11px * var(--k));
   margin: calc(-5.5px * var(--k)) 0 0 calc(-5.5px * var(--k)); border-radius: 50%;
@@ -1338,8 +1451,23 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	*/
 	var SPINUP_TAU_MS = 220;
 	var BRAKE_TAU_MS = 110;
+	/**
+	* How far the deck magnifies while the headshell is being dragged.
+	*
+	* Chosen against the thing it exists to make readable. The painter lays grooves
+	* at a 1.15px pitch, so at 1x a band on a full twelve-track side is a handful of
+	* groove rings and its waveform texture is a suggestion; at 2.2x it is a dozen
+	* or so with visibly varying brightness, which is the difference between aiming
+	* at a track and aiming at a smudge.
+	*
+	* Not higher, because the loupe is anchored where you grabbed and the rest of the
+	* record has to stay recognisable around it — past roughly this the band you are
+	* leaving and the one you are heading for are both off-screen, and a cue you
+	* cannot aim in context is no easier than one you cannot see.
+	*/
+	var CUE_ZOOM = 2.2;
 	/** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
-	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><button class=\"start\" type=\"button\">START&#183;STOP</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pscale\"></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\">Direct Drive</div></div>";
+	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><button class=\"start\" type=\"button\">START&#183;STOP</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pscale\"></div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\">Direct Drive</div></div>";
 	/**
 	* The S-shaped arm tube.
 	*
@@ -1369,6 +1497,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let host;
 		let root;
 		let deck;
+		let stage;
+		let cueRing;
+		let cueReadout;
 		let platter;
 		let spin;
 		let canvas;
@@ -1450,6 +1581,21 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* moment the host resolves it either way.
 		*/
 		let pendingPlay = false;
+		/**
+		* A cue changed track on a deck that was not running, and the play it implied
+		* is being undone.
+		*
+		* `playQueueIndex` is the contract's only way to change track and it always
+		* starts playback, so cueing a paused or stopped deck to a different band would
+		* otherwise start the music and — via the rising edge in frame() — drop the arm
+		* and clear the motor. Moving the arm is not pressing play: on the desk you cue
+		* a stopped deck constantly and it stays stopped.
+		*
+		* While set, the rising edge is ignored (the sound is this deck's own doing, not
+		* an instruction) and the transport is re-asserted until the host agrees. It
+		* clears the moment the host reports paused, so it can never latch.
+		*/
+		let restoringCue = false;
 		/** Platter speed, eased toward its target so the deck spins up and brakes
 		*  instead of snapping. In units where 1 is 33⅓. */
 		let spinVel = 1;
@@ -1507,6 +1653,21 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let lastArt = null;
 		let currentIndex = -1;
 		const unsubs = [];
+		/**
+		* What the last pressing painted, so the magnifier can re-rasterise it at a
+		* higher resolution without re-running the layout.
+		*
+		* Re-pressing to repaint would work and would be wrong: `repress` recomputes
+		* the geometry, the bands and the arm mount, and a cue drag must not be able
+		* to move the pressing it is aiming at.
+		*/
+		let lastPeaks = [];
+		let lastEtch = null;
+		/** Titles of the tracks on the pressed side, for the cue readout. Side-relative,
+		*  like `bands`, so the two are indexed by the same number. */
+		let lastTitles = [];
+		/** Backing-store scale the canvas was last painted at. */
+		let paintedScale = 1;
 		/** Lay out and repaint. Called on a queue or size change — never per frame. */
 		function repress(tracks) {
 			const onSide = side ? tracks.slice(side.start, side.start + side.count) : tracks;
@@ -1516,7 +1677,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const plinthH = box / cfg.aspect;
 			geo = buildGeometry(Math.max(40, plinthW * cfg.platterScale));
 			mountPoint = buildArmMount(geo, cfg.arm);
-			bands = layoutBands(durations, geo);
+			bands = layoutBands(durations, geo, SIDE_SECS);
 			deck.style.setProperty("--plinth-w", `${plinthW}px`);
 			deck.style.setProperty("--plinth-h", `${plinthH}px`);
 			deck.style.setProperty("--pk", String(plinthW / 368));
@@ -1552,7 +1713,115 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				const ry = cfg.restAt.y * plinthH - platterTop;
 				restDeg = Math.atan2(ry - mountPoint.py, rx - mountPoint.px) * 180 / Math.PI;
 			}
-			paintVinylSurface(canvas, geo, bands, onSide.map((t) => t.peaks), sideLabel(side));
+			lastPeaks = onSide.map((t) => t.peaks);
+			lastEtch = sideLabel(side);
+			lastTitles = onSide.map((t) => t.title);
+			paint(1);
+		}
+		/**
+		* Re-rasterise the last pressing at `scale` device pixels per CSS pixel.
+		*
+		* Separate from repress() because the two answer different questions. A
+		* pressing changes WHAT is on the record; this changes only how finely it is
+		* drawn, and the cue magnifier must never be able to move the bands it is
+		* aiming at.
+		*/
+		function paint(scale) {
+			paintedScale = scale;
+			paintVinylSurface(canvas, geo, bands, lastPeaks, lastEtch, scale);
+		}
+		/** Repaint only if the resolution really changed — a pointermove asks every
+		*  frame, and re-rasterising a whole record per frame would drop the drag. */
+		function paintAt(scale) {
+			if (scale !== paintedScale) paint(scale);
+		}
+		/**
+		* How close to the end of a track a cue may land, in seconds.
+		*
+		* The innermost groove of a band maps to exactly its duration — which is not a
+		* position IN that track, it is the boundary with the next one. Seeking there
+		* ends the track on the spot and the queue advances, so dropping the needle at
+		* the end of a track skipped it entirely; at the end of a SIDE the advance
+		* wrapped, which is the other half of why a drop there landed back at the
+		* start. `radiusToPosition` can even come back a hair PAST the duration on the
+		* float round-trip (209.00000000000006 for a 209s track), which is the same
+		* thing only more certain.
+		*
+		* A second is well under a pixel of band and inaudible as a difference, but it
+		* guarantees the drop lands inside the track that was aimed at.
+		*/
+		const CUE_END_MARGIN_SECS = 1;
+		/**
+		* The position a cue should actually target, given where the needle landed.
+		*
+		* Used by BOTH the seek and the readout, so the number shown is the number
+		* committed — a readout promising 3:29 while the seek delivered something else
+		* would be worse than showing nothing.
+		*/
+		function cueTarget(at) {
+			const duration = bands[at.index]?.durationSecs ?? 0;
+			if (!(duration > 0)) return 0;
+			return Math.max(0, Math.min(at.positionSecs, duration - CUE_END_MARGIN_SECS));
+		}
+		/**
+		* mm:ss. Minutes only — a side is 22 minutes, so there is no hour case.
+		*
+		* ROUNDS rather than floors, unlike an elapsed-time display. This is a target,
+		* not a clock: the radius round-trips through the band maths and lands a
+		* fraction of a millisecond under, so flooring turns an exact 4:00 into "3:59"
+		* — a whole second of apparent error from a rounding artefact, on the one
+		* number the user is reading to aim by.
+		*/
+		function clock(secs) {
+			const s = Math.max(0, Math.round(secs));
+			return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+		}
+		/**
+		* Say where the needle is, in the two terms the user is actually choosing in.
+		*
+		* The ring is the geometric answer — on a record the position IS the radius, so
+		* a circle at that radius names the groove exactly, including the part of it
+		* hidden under the headshell. The readout is the human one: a radius is not a
+		* track name, and "which song, how far in" is the question a cue is really
+		* asking. Neither is decoration; without them you are aiming an opaque block at
+		* something you cannot see.
+		*/
+		function showCue(r) {
+			cueRing.style.width = `${(r * 2).toFixed(1)}px`;
+			cueRing.style.height = `${(r * 2).toFixed(1)}px`;
+			const at = radiusToPosition(bands, r);
+			if (!at) return;
+			const title = lastTitles[at.index] ?? "";
+			const n = (side?.start ?? 0) + at.index + 1;
+			cueReadout.textContent = `${n}. ${title}  ·  ${clock(cueTarget(at))}`;
+		}
+		/**
+		* Anchor the magnifier on the point being pressed, once, for the whole gesture.
+		*
+		* THE ANCHOR IS THE PRESS POINT, and that is forced rather than chosen. Under
+		* `scale(z)` about origin O a deck point X renders at `z·X + (1−z)·O`, so the
+		* point the cursor is over is `X = (R − (1−z)·O) / z` for a cursor at deck
+		* position R. Demanding that a stationary cursor keep naming the same groove as
+		* z changes — i.e. X = R for all z — gives exactly one solution: O = R. Anchor
+		* anywhere else and applying the zoom re-maps the cursor onto a different
+		* groove, so the needle slides out from under a hand that has not moved.
+		*
+		* Anchoring on the STYLUS was the first attempt and it fails twice over. It
+		* shifts the needle once when the zoom lands, per the algebra above; and if it
+		* is re-aimed each move to follow the needle it becomes a feedback loop, because
+		* the stylus is derived from the radius and the radius is measured against the
+		* platter as transformed by the anchor. Near the run-out, where the arm's angle
+		* changes fastest per unit of radius, that loop diverges — the radius climbs on
+		* its own until it clamps at the lead-in, which resolves to track 1 at 0:00. So
+		* "let go at the end of the last track" dropped the needle at the start of the
+		* side.
+		*
+		* Read from `deck`, which is never transformed, so this is measurable at any
+		* time without the zoom contaminating it.
+		*/
+		function anchorMagnifier(clientX, clientY) {
+			const d = deck.getBoundingClientRect();
+			stage.style.transformOrigin = `${(clientX - d.left).toFixed(1)}px ${(clientY - d.top).toFixed(1)}px`;
 		}
 		/**
 		* Screen point → groove radius.
@@ -1594,22 +1863,35 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			let last = null;
 			dragging = true;
 			parked = false;
+			anchorMagnifier(e.clientX, e.clientY);
 			deck.classList.add("dragging");
+			let zoomed = false;
 			const move = (ev) => {
-				const r = clampToProgram(radiusAt(ev.clientX, ev.clientY), geo);
+				const r = clampToPressing(radiusAt(ev.clientX, ev.clientY), bands, geo);
 				last = radiusToPosition(bands, r);
 				arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+				showCue(r);
+				if (!zoomed) {
+					zoomed = true;
+					deck.classList.add("zoomed");
+					paintAt(CUE_ZOOM);
+				}
 			};
 			const up = () => {
 				dragging = false;
 				deck.classList.remove("dragging");
+				deck.classList.remove("zoomed");
+				paintAt(1);
 				target.removeEventListener("pointermove", move);
 				target.removeEventListener("pointerup", up);
 				target.removeEventListener("pointercancel", up);
 				if (!last) return;
 				const queueIndex = (side?.start ?? 0) + last.index;
-				if (queueIndex === currentIndex) host.actions.seek(last.positionSecs);
-				else host.actions.playQueueIndex(queueIndex);
+				if (queueIndex === currentIndex) host.actions.seek(cueTarget(last));
+				else {
+					host.actions.playQueueIndex(queueIndex);
+					restoringCue = motorOff || armUp;
+				}
 			};
 			try {
 				target.setPointerCapture(e.pointerId);
@@ -1711,9 +1993,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				style.textContent = DECK_CSS;
 				root.append(style);
 				deck = doc.createElement("div");
-				deck.className = `deck lifted skin-${cfg.name}`;
-				deck.innerHTML = (cfg.furniture ? PLINTH_HTML : "") + "<div class=\"platter\">" + (cfg.furniture ? "<div class=\"rim\"><i class=\"dots\"></i></div>" : "") + "<div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div>" + (cfg.furniture ? SARM_SVG : "") + "<div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div>";
+				deck.className = `deck lifted skin-${cfg.name}` + (h.reducedMotion ? " reduce-motion" : "");
+				deck.style.setProperty("--cue-zoom", String(CUE_ZOOM));
+				deck.innerHTML = "<div class=\"stage\">" + (cfg.furniture ? PLINTH_HTML : "") + "<div class=\"platter\">" + (cfg.furniture ? "<div class=\"rim\"><i class=\"dots\"></i></div>" : "") + "<div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"cue-ring\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div>" + (cfg.furniture ? SARM_SVG : "") + "<div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div></div><div class=\"cue-readout\"></div>";
 				root.append(deck);
+				stage = deck.querySelector(".stage");
+				cueRing = deck.querySelector(".cue-ring");
+				cueReadout = deck.querySelector(".cue-readout");
 				platter = deck.querySelector(".platter");
 				spin = deck.querySelector(".spin");
 				canvas = deck.querySelector("canvas");
@@ -1749,12 +2035,17 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				unsubs.push(h.onSkinChange(() => {}));
 			},
 			frame(state) {
+				if (restoringCue) {
+					if (state.playing && !wasPlaying) syncTransport();
+					else if (!state.playing) restoringCue = false;
+				}
 				if (state.stopped) {
 					motorOff = true;
 					armUp = true;
 					parked = true;
 					pendingPlay = false;
-				} else if (state.playing && !wasPlaying) {
+					restoringCue = false;
+				} else if (state.playing && !wasPlaying && !restoringCue) {
 					motorOff = false;
 					armUp = false;
 					parked = false;

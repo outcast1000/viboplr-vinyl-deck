@@ -1,3 +1,71 @@
+## 1.2.0
+
+- **The deck zooms in while you cue.** Grab the headshell and the whole deck
+  magnifies around the needle for as long as you hold it, so you can see the
+  grooves — and the waveform pressed into them — while you are choosing where to
+  drop. This is the gesture that needed it most: a band is the drag target, and on
+  a full side a band is a few pixels of groove, so cueing meant aiming at
+  something you could not read. Let go and it eases back.
+  The lens is anchored on **the point you grabbed**, and stays there for the whole
+  gesture. That is forced rather than chosen: it is the only anchor for which a
+  hand holding still keeps naming the same groove as the zoom comes in. Anchor on
+  the spindle and the needle is the first thing pushed off the edge; anchor on the
+  needle and re-aim it as the needle moves, and it becomes a feedback loop — the
+  anchor is derived from the radius, and the radius is measured against a record
+  the anchor has moved. Near the run-out that loop runs away, which is why a drop
+  at the end of the last track used to land at the start of the side.
+  **The record is redrawn at the zoomed resolution rather than stretched.** A CSS
+  scale over the existing canvas would have been a line of code and would have
+  made the grooves bigger and blurrier — more pixels of the same picture, no more
+  detail, which is the opposite of the point of looking closer. The surface is
+  re-rasterised to match the magnification and dropped back afterwards, so what
+  you see up close is really there.
+  It zooms on the first movement, not on the press: cueing has always been a drag,
+  and a click that resolves nothing should not flash the deck in and out. Under
+  reduced motion the magnifier stays and only its travel goes — it is what makes a
+  thin band aimable, so switching it off would be an accessibility setting working
+  backwards.
+- **You can now see where the needle actually is.** The headshell is an opaque
+  block that sits directly on top of the one groove it is reading, so the thing
+  you were aiming was the thing you could not see — magnifying it only made the
+  block bigger. Cueing now draws a **ring at the needle's exact radius**, which on
+  a record is the whole of what "position" means: it comes out either side of the
+  shell and crosses the band edges, so the track you are about to drop into is
+  visible rather than guessed. Alongside it a small readout names that track and
+  the time you would land at — a radius identifies a groove but not a song, and
+  "which one, how far in" is what a cue is really asking. Both appear only while
+  you are cueing; a permanent ring would be a HUD line drawn across a record.
+- **A record is pressed to the length of the music on it.** The bands were
+  normalised to the queue's own running time, so they always filled the disc
+  whatever was on it — one three-minute track covered the same surface as a full
+  twenty-two-minute side, which is not a record, it is a pie chart. A side now
+  takes only the share of the program area its running time earns: a single short
+  track is a thin band of grooves near the rim with run-out all the way in, the
+  way a 12" single actually looks, and a full side still reaches the run-out. The
+  arm stops at the end of the pressing too, rather than being parked in blank
+  vinyl that no track answers for.
+  One consequence worth knowing: a side holding a handful of short tracks now
+  presses genuinely thin bands, because that is genuinely how little music is on
+  it. The cue magnifier is what makes those aimable.
+- **Cueing no longer starts the deck.** Moving the arm says where the deck is, not
+  whether it is running — on the desk you cue a stopped deck constantly and it
+  stays stopped. Dropping the needle on a paused or stopped deck used to start the
+  music and drop the arm with it, because changing track is only expressible as
+  "play this track". The deck now takes that back: the arm stays exactly as high
+  as you left it and the platter keeps doing whatever it was doing, at the new
+  position.
+- **The pitch scale's red zero mark no longer lies across the fader.** The
+  graduations and the fader are both plain positioned boxes, so the one declared
+  last wins — and the scale was last, painting its zero line straight over the
+  knob. On the real deck the scale is printed on the plinth and the fader sits
+  proud of it, which is now the order they are drawn in.
+- **A cue can no longer skip the track it was aimed at.** The innermost groove of
+  a band maps to exactly that track's duration — which is not a position inside
+  it, it is the boundary with the next one — so dropping the needle at the end of
+  a track seeked to the very end, the track ended on the spot, and the queue moved
+  on. At the end of a side that advance wrapped, landing you back at the start.
+  A drop now lands a moment inside the track, so it plays what you pointed at.
+
 ## 1.1.0
 
 - **Two decks.** Alongside the bare record on black there is now a **silver

@@ -35,9 +35,6 @@ export const DECK_CSS = `
   --pk: 1;
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   overflow: hidden;
   /* NO PERSPECTIVE, AND NO 3D ANYWHERE IN THE ARM. This is a top-down view of a
      record, so a radius on the disc IS a position in a track — and a perspective
@@ -48,6 +45,36 @@ export const DECK_CSS = `
      a fixed 620px), which put the needle past the rim while paused. Height is
      carried by brightness and the shadow instead — see .lifted below. */
 }
+
+/* Everything the deck is made of, and the only thing the cue magnifier scales.
+   It exists so the zoom has somewhere to live that is INSIDE the clip: ".deck"
+   carries overflow:hidden, and a transform on an element applies after that
+   element's own clipping, so scaling ".deck" would blow the magnified picture
+   out across the rest of the view. One level in, ".deck" stays a fixed window
+   and the stage moves behind it.
+   The flex centring moved here with the children — the stage is out of flow
+   (absolute), so ".deck"'s own centring no longer reaches them. */
+.stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* The origin is written per-frame by focusMagnifier(); this is only the value
+     before the first drag. --zoom is the whole animation. */
+  transform: scale(var(--zoom, 1));
+  transform-origin: 50% 50%;
+  transition: transform .22s var(--deck-ease, cubic-bezier(.22,.68,.25,1));
+}
+/* Only the SCALE is transitioned, and transform-origin deliberately is not: the
+   origin is rewritten on every pointermove, and easing it would make the deck
+   swim along behind the needle instead of pivoting about it. Changing the origin
+   alone re-renders without firing a transition, since the transform VALUE is
+   untouched. */
+.zoomed .stage { --zoom: var(--cue-zoom, 2.2); }
+/* The magnifier is an aid, not decoration, so it still zooms — but it arrives
+   without the travel. */
+.reduce-motion .stage { transition: none; }
 
 .platter {
   position: relative;
@@ -110,6 +137,57 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   background-size: cover; background-position: center;
   box-shadow: 0 0 0 1px rgba(0,0,0,.35), inset 0 0 0 calc(6px * var(--k)) rgba(0,0,0,.07);
 }
+/* THE CUE RING — where the needle is, stated as a groove.
+   The headshell is an opaque block that covers the exact groove it reads, so the
+   one thing you are aiming is the one thing hidden. On a record the position IS
+   the radius, so a circle at that radius names it completely: it emerges either
+   side of the shell, and it crosses the band boundaries so you can see which
+   track you are about to land in rather than inferring it.
+   Inside .platter but OUTSIDE .spin — it marks a place on the deck, not on the
+   record, so it must not turn with the grooves. Sized in JS from the live radius;
+   centred on the spindle by the margins. */
+.cue-ring {
+  position: absolute; left: 50%; top: 50%;
+  width: 0; height: 0;
+  margin: 0; translate: -50% -50%;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.92);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 0 calc(5px * var(--k)) rgba(255,255,255,.45);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .16s ease;
+  z-index: 16;
+}
+/* Only while cueing. The rest of the time it would be a HUD line drawn across a
+   record, which is the opposite of what this plugin is. */
+.dragging .cue-ring { opacity: 1; }
+
+/* THE CUE READOUT — the same answer in the terms you are actually choosing in.
+   A radius names a groove but not a song, and "which track, how far in" is what a
+   cue is really asking. Pinned to the bottom of the DECK and deliberately outside
+   .stage, so the magnifier cannot blow it up and shove it off the edge: the zoom
+   is there to enlarge grooves, and text has no detail to reveal. */
+.cue-readout {
+  position: absolute;
+  left: 50%; bottom: calc(10px * var(--pk));
+  translate: -50% 0;
+  max-width: 86%;
+  padding: calc(4px * var(--pk)) calc(10px * var(--pk));
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: color-mix(in srgb, var(--bg-primary) 78%, #000);
+  color: var(--text-primary, #fff);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 calc(2px * var(--pk)) calc(8px * var(--pk)) rgba(0,0,0,.5);
+  font: 600 calc(11px * var(--pk))/1.5 system-ui, sans-serif;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .16s ease;
+  z-index: 30;
+}
+.dragging .cue-readout { opacity: 1; }
+
 .hole {
   position: absolute; left: 50%; top: 50%; width: calc(11px * var(--k)); height: calc(11px * var(--k));
   margin: calc(-5.5px * var(--k)) 0 0 calc(-5.5px * var(--k)); border-radius: 50%;

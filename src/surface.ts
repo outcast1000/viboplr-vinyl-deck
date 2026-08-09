@@ -33,9 +33,28 @@ export type BandPeaks = ArrayLike<number> | null | undefined;
 // at the call site.
 
 /**
+ * Ceiling on the backing-store scale, in device pixels per CSS pixel.
+ *
+ * `pixelScale` multiplies an already-retina `devicePixelRatio`, and the cost is
+ * quadratic: a 500px deck at dpr 2.5 and scale 2 is a 2500² canvas, four times
+ * the pixels of the unzoomed one. This caps that at a size a cue drag can still
+ * repaint without a hitch, and past it the extra resolution is finer than the
+ * 1.15px groove pitch has anything left to say.
+ */
+export const MAX_PIXEL_RATIO = 4;
+
+/**
  * Paint the record surface. Cheap enough to redraw on resize, but it only needs
  * to run when the size or the pressing changes — never on a skin change, and
  * never per animation frame (rotation is a CSS transform on a parent).
+ *
+ * `pixelScale` raises the BACKING STORE resolution without touching the layout:
+ * every coordinate here is still in `geo`'s CSS pixels, and the canvas element's
+ * CSS size is set by the caller. It exists for the cue-drag magnifier — CSS-
+ * scaling the deck stretches a fixed bitmap, which makes the grooves bigger and
+ * blurrier rather than more legible, and the whole point of zooming into a
+ * record is to read the waveform pressed into it. Re-rasterising at the zoomed
+ * size is what actually shows more.
  */
 export function paintVinylSurface(
   canvas: HTMLCanvasElement,
@@ -43,11 +62,15 @@ export function paintVinylSurface(
   bands: Band[],
   peaks?: BandPeaks[],
   etch?: string | null,
+  pixelScale = 1,
 ): void {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const dpr = Math.min(
+    (window.devicePixelRatio || 1) * Math.max(1, pixelScale),
+    MAX_PIXEL_RATIO,
+  );
   canvas.width = Math.max(1, Math.round(geo.size * dpr));
   canvas.height = Math.max(1, Math.round(geo.size * dpr));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -107,8 +130,16 @@ export function paintVinylSurface(
   });
 
   // --- run-out + dead wax (where the matrix numbers are etched) ---
-  ring(rProgIn - 1, 1.4, black(0.95));
-  for (let r = rProgIn - 3; r > rDeadWax; r -= 3.2) ring(r, 1, white(0.04));
+  //
+  // Starts where the LAST BAND ends, not at the geometric run-out. A side is
+  // pressed to the length of its music (see layoutBands), so a short one stops
+  // well outside `rProgIn` — and drawing the run-out from the fixed radius would
+  // leave a ring of nothing between the last track and it. On a record that space
+  // is run-out spiral, and here it is what shows a single short track for what it
+  // is: a thin band of grooves near the rim on a mostly blank disc.
+  const progEnd = bands.length > 0 ? bands[bands.length - 1].inner : rProgIn;
+  ring(progEnd - 1, 1.4, black(0.95));
+  for (let r = progEnd - 3; r > rDeadWax; r -= 3.2) ring(r, 1, white(0.04));
   ring(rLabel + 0.5, 1, white(0.09));
 
   // Which side this is, scratched into the dead wax — which is exactly where a

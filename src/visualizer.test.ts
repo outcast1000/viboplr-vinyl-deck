@@ -16,7 +16,7 @@ import { createVinylDeckVisualizer, RATE_45 } from "./visualizer";
 import { armAngleDeg, buildArmMount, buildGeometry, layoutBands, positionToRadius } from "./geometry";
 import { SKINS } from "./skins";
 import { PITCH_RANGE, composeRate } from "./pitch";
-import { type Side, splitSides } from "./sides";
+import { SIDE_SECS, type Side, splitSides } from "./sides";
 
 const SIZE = 368;
 // Deliberately uneven, and deliberately UNDER one side's 22 minutes (1271s):
@@ -34,7 +34,10 @@ const QUEUE: PluginVisualizerTrack[] = DURATIONS.map((d, i) => ({
 
 /** Mirror of the geometry the deck will build, for computing where to click. */
 const geo = buildGeometry(SIZE);
-const bands = layoutBands(DURATIONS, geo);
+// SIDE_SECS mirrors what the visualizer presses with: a side takes only the
+// share of the record its running time earns, so a fixture computed without it
+// would aim at radii the deck never draws.
+const bands = layoutBands(DURATIONS, geo, SIDE_SECS);
 
 function makeHost(over: Partial<PluginVisualizerHost> = {}) {
   const el = document.createElement("div");
@@ -173,7 +176,7 @@ function cue(
  */
 const SL_SCALE = SKINS.sl1200.platterScale;
 const geoSL = buildGeometry(SIZE * SL_SCALE);
-const bandsSL = layoutBands(DURATIONS, geoSL);
+const bandsSL = layoutBands(DURATIONS, geoSL, SIDE_SECS);
 const mountSL = buildArmMount(geoSL, SKINS.sl1200.arm);
 
 /**
@@ -571,7 +574,7 @@ describe("vinyl deck visualizer", () => {
     // A ramp, so a working implementation yields many distinct groove alphas.
     const ramp = Array.from({ length: 200 }, (_, i) => 0.05 + (i / 199) * 0.95);
     const withPeaks: PluginVisualizerTrack[] = [
-      { ...QUEUE[0], durationSecs: 200, peaks: ramp },
+      { ...QUEUE[0], durationSecs: SIDE_SECS, peaks: ramp },
     ];
 
     const { host } = makeHost();
@@ -587,7 +590,7 @@ describe("vinyl deck visualizer", () => {
     // about the grooves. An absolute threshold here would pass with no waveform
     // effect at all.
     strokes = [];
-    const noPeaks: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: 200 }];
+    const noPeaks: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: SIDE_SECS }];
     v.frame(makeState({ queue: noPeaks, currentIndex: 0, queueRevision: 42 }));
     const flat = whites();
 
@@ -601,7 +604,7 @@ describe("vinyl deck visualizer", () => {
     const v = createVinylDeckVisualizer();
     v.mount(host);
 
-    const plain: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: 120 }];
+    const plain: PluginVisualizerTrack[] = [{ ...QUEUE[0], durationSecs: SIDE_SECS }];
     v.frame(makeState({ queue: plain, currentIndex: 0, queueRevision: 7 }));
     const before = new Set(strokes.filter((c) => c.startsWith("rgba(255,255,255,"))).size;
 
@@ -609,7 +612,7 @@ describe("vinyl deck visualizer", () => {
     const enriched: PluginVisualizerTrack[] = [
       {
         ...QUEUE[0],
-        durationSecs: 120,
+        durationSecs: SIDE_SECS,
         peaks: Array.from({ length: 120 }, (_, i) => 0.05 + (i / 119) * 0.95),
       },
     ];
@@ -666,10 +669,10 @@ describe("deck liveries", () => {
   });
 
   it("paints the plinth behind the platter", () => {
-    // Order decides here, not z-index: both are children of .deck.
+    // Order decides here, not z-index: both are children of .stage.
     const { host, root } = makeHost();
     createVinylDeckVisualizer("sl1200").mount(host);
-    const kids = Array.from((root.querySelector(".deck") as HTMLElement).children);
+    const kids = Array.from((root.querySelector(".stage") as HTMLElement).children);
     expect(kids.findIndex((el) => el.classList.contains("plinth")))
       .toBeLessThan(kids.findIndex((el) => el.classList.contains("platter")));
   });
@@ -1088,6 +1091,24 @@ describe("pitch fader", () => {
     expect(() => pull(h.root, 1)).not.toThrow();
   });
 
+  it("paints the tick scale behind the fader, not across it", () => {
+    // Both are positioned with no z-index, so the later one wins — and the scale's
+    // red zero mark deliberately overhangs toward the slot, so with the scale last
+    // it was drawn straight across the fader knob. On the real deck the
+    // graduations are printed on the plinth and the fader sits proud of them.
+    const { root } = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(makeHost().host);
+    const h = makeHost();
+    createVinylDeckVisualizer("sl1200").mount(h.host);
+    const kids = Array.from((h.root.querySelector(".plinth") as HTMLElement).children);
+    const scale = kids.findIndex((el) => el.classList.contains("pscale"));
+    const fader = kids.findIndex((el) => el.classList.contains("pitch"));
+    expect(scale).toBeGreaterThanOrEqual(0);
+    expect(scale).toBeLessThan(fader);
+    expect(root && v).toBeTruthy();
+  });
+
   it("has no fader at all on the plain deck", () => {
     const { root } = makeHost();
     createVinylDeckVisualizer("studio").mount(makeHost().host);
@@ -1095,6 +1116,430 @@ describe("pitch fader", () => {
     createVinylDeckVisualizer("studio").mount(plain.host);
     expect(plain.root.querySelector(".pitch")).toBeNull();
     expect(root).toBeTruthy();
+  });
+});
+
+describe("the cue magnifier", () => {
+  function mounted(skin: "studio" | "sl1200" = "studio") {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer(skin);
+    v.mount(h.host);
+    v.frame(makeState({ currentIndex: 0 }));
+    return { ...h, v, deck: h.root.querySelector(".deck") as HTMLElement };
+  }
+
+  /** Press the headshell and move to the groove `secs` into `index`, WITHOUT
+   *  releasing — the magnifier only exists for the length of the gesture. */
+  function grab(root: ShadowRoot, index: number, secs: number, g = geo, b = bands) {
+    const head = root.querySelector(".head") as HTMLElement;
+    const r = positionToRadius(b, index, secs, g);
+    const at = (x: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: g.cy });
+    head.dispatchEvent(new MouseEvent("pointerdown", at(g.cx - g.rLeadIn)) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointermove", at(g.cx - r)) as unknown as PointerEvent);
+    return head;
+  }
+
+  it("zooms only while the headshell is held", () => {
+    const { root, deck } = mounted();
+    expect(deck.classList.contains("zoomed")).toBe(false);
+
+    const head = grab(root, 3, 20);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    expect(deck.classList.contains("zoomed")).toBe(false);
+  });
+
+  it("scales the stage, never the deck — the deck is the crop", () => {
+    // `.deck` carries overflow:hidden, and a transform applies after the
+    // element's own clip. Zooming it would magnify the clipped picture and spill
+    // the deck across the rest of the view instead of cropping to the slot.
+    const { root, deck } = mounted();
+    grab(root, 2, 10);
+    expect(deck.style.transform).toBe("");
+    expect(root.querySelector(".stage")).toBeTruthy();
+    const css = (root.querySelector("style") as HTMLStyleElement).textContent ?? "";
+    expect(css).toMatch(/\.deck\s*\{[^}]*overflow:\s*hidden/);
+    expect(css).toMatch(/\.zoomed \.stage\s*\{[^}]*--zoom/);
+  });
+
+  it("anchors the lens on the stylus and then HOLDS it there", () => {
+    // Scaling about the stylus is what keeps the needle on screen: a scale leaves
+    // its own origin fixed, so the record grows around the needle rather than
+    // carrying it off the edge (which is what scaling about the spindle does at
+    // the rim).
+    //
+    // But the anchor is set ONCE and frozen for the gesture. Re-aiming it at the
+    // needle every move is the obvious thing to want, and it is a feedback loop:
+    // the origin comes from the radius, and the radius is measured against the
+    // platter as transformed by that origin. See the stationary-hand test below
+    // for what it did.
+    const { root } = mounted();
+    const stage = root.querySelector(".stage") as HTMLElement;
+
+    grab(root, 0, 0); // outermost groove
+    const anchored = stage.style.transformOrigin;
+    expect(anchored).not.toBe("");
+
+    const head = root.querySelector(".head") as HTMLElement;
+    const inner = positionToRadius(bands, DURATIONS.length - 1, 0, geo);
+    const toInner = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - inner, clientY: geo.cy };
+    head.dispatchEvent(new MouseEvent("pointermove", toInner) as unknown as PointerEvent);
+    // Dragged the whole way to the run-out, and the lens has not budged.
+    expect(stage.style.transformOrigin).toBe(anchored);
+  });
+
+  it("re-rasterises the record instead of stretching the bitmap", () => {
+    // THE POINT OF THE FEATURE. A CSS scale over a fixed canvas makes the grooves
+    // bigger and blurrier, which is the opposite of "let me read the waveform".
+    // The backing store has to grow with the zoom for there to be more to see.
+    const { root } = mounted();
+    const canvas = root.querySelector("canvas") as HTMLCanvasElement;
+    const before = canvas.width;
+    expect(before).toBeGreaterThan(0);
+
+    const head = grab(root, 3, 20);
+    expect(canvas.width).toBeGreaterThan(before);
+    // ...and the CSS size is untouched, so the layout and every radius with it
+    // are exactly what they were.
+    expect(canvas.style.width).toBe(`${geo.size}px`);
+
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    expect(canvas.width).toBe(before);
+  });
+
+  it("cues to the same groove zoomed as it does at 1x", () => {
+    // The invariant the magnifier could silently break. `radiusAt` divides by the
+    // platter's measured width, so a scaled platter still yields deck-space
+    // radii — but only as long as nothing rotates or offsets it independently.
+    // Same gesture, same landing band, zoom or no zoom.
+    const { root, playQueueIndex } = mounted();
+    const head = root.querySelector(".head") as HTMLElement;
+    const r = positionToRadius(bands, 4, 240, geo);
+    const Z = 2.2;
+
+    const down = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - geo.rLeadIn, clientY: geo.cy };
+    head.dispatchEvent(new MouseEvent("pointerdown", down) as unknown as PointerEvent);
+
+    // Mid-drag the deck is zoomed, so the platter reports its SCALED box — which
+    // is what a real getBoundingClientRect does under a transformed ancestor.
+    const scaled = geo.size * Z;
+    const platterEl = root.querySelector(".platter") as HTMLElement;
+    platterEl.getBoundingClientRect = () =>
+      ({ x: 0, y: 0, left: 0, top: 0, width: scaled, height: scaled,
+         right: scaled, bottom: scaled, toJSON: () => ({}) }) as DOMRect;
+
+    // The pointer lands on the SAME GROOVE, which under that box means both axes
+    // scaled — the mistake worth guarding is scaling one and not the other, which
+    // silently aims at a different radius entirely.
+    const moved = {
+      bubbles: true, button: 0, pointerId: 1,
+      clientX: (geo.cx - r) * Z,
+      clientY: geo.cy * Z,
+    };
+    head.dispatchEvent(new MouseEvent("pointermove", moved) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    expect(playQueueIndex).toHaveBeenCalledWith(4);
+  });
+
+  it("keeps the zoom under reduced motion but drops its travel", () => {
+    // A magnifier that only appears for users who tolerate animation would be an
+    // accessibility feature backwards — it is what makes a thin band aimable, not
+    // an embellishment. So the zoom stays and only the easing goes.
+    const h = makeHost({ reducedMotion: true });
+    const v = createVinylDeckVisualizer();
+    v.mount(h.host);
+    v.frame(makeState({ currentIndex: 0 }));
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    expect(deck.classList.contains("reduce-motion")).toBe(true);
+
+    grab(h.root, 3, 20);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+    const css = (h.root.querySelector("style") as HTMLStyleElement).textContent ?? "";
+    expect(css).toMatch(/\.reduce-motion \.stage\s*\{[^}]*transition:\s*none/);
+  });
+
+  it("marks the groove under the needle, which the headshell covers", () => {
+    // The shell is an opaque block sitting on the one groove it reads, so the
+    // thing being aimed is the thing you cannot see. On a record the position IS
+    // the radius, so a ring at that radius states it completely — and it emerges
+    // either side of the shell, crossing the band edges, so which track you are
+    // about to land in is visible rather than inferred.
+    const { root } = mounted();
+    const ring = root.querySelector(".cue-ring") as HTMLElement;
+    expect(ring).toBeTruthy();
+    expect(ring.style.width).toBe(""); // nothing drawn before a cue
+
+    const r = positionToRadius(bands, 4, 240, geo);
+    grab(root, 4, 240);
+    // Diameter, so the ring passes exactly through the stylus at radius r.
+    expect(parseFloat(ring.style.width)).toBeCloseTo(r * 2, 0);
+    expect(parseFloat(ring.style.height)).toBeCloseTo(r * 2, 0);
+  });
+
+  it("names the track and the time it would drop into", () => {
+    // A radius identifies a groove but not a song, and "which track, how far in"
+    // is what a cue is actually asking.
+    const { root } = mounted();
+    const readout = root.querySelector(".cue-readout") as HTMLElement;
+    expect(readout.textContent).toBe("");
+
+    grab(root, 4, 240);
+    // Absolute queue number, matching the playlist beside the deck; 240s = 4:00.
+    expect(readout.textContent).toContain("5.");
+    expect(readout.textContent).toContain(QUEUE[4].title);
+    expect(readout.textContent).toContain("4:00");
+  });
+
+  it("keeps the readout out of the magnifier", () => {
+    // It lives on .deck, not .stage: the zoom exists to enlarge grooves, and text
+    // has no detail to reveal — magnifying it would only shove it off the deck.
+    const { root } = mounted();
+    const readout = root.querySelector(".cue-readout") as HTMLElement;
+    const stage = root.querySelector(".stage") as HTMLElement;
+    expect(stage.contains(readout)).toBe(false);
+    expect((readout.parentElement as HTMLElement).classList.contains("deck")).toBe(true);
+  });
+
+  it("shows both only while the cue is in progress", () => {
+    const { root } = mounted();
+    const css = (root.querySelector("style") as HTMLStyleElement).textContent ?? "";
+    // A permanent ring would be a HUD line drawn across a record.
+    expect(css).toMatch(/\.cue-ring\s*\{[^}]*opacity:\s*0/);
+    expect(css).toMatch(/\.cue-readout\s*\{[^}]*opacity:\s*0/);
+    expect(css).toMatch(/\.dragging \.cue-ring\s*\{[^}]*opacity:\s*1/);
+    expect(css).toMatch(/\.dragging \.cue-readout\s*\{[^}]*opacity:\s*1/);
+  });
+
+  /**
+   * Make the platter report the box it would REALLY have under the magnifier.
+   *
+   * The default stub in this file is transform-blind, which is exactly why the
+   * feedback loop below was invisible to the suite while being obvious in the
+   * app. Here the rect is derived from the live transform-origin and zoom, the
+   * way a browser derives it — that is what lets a moving origin come back round
+   * and change the radius under a stationary cursor.
+   */
+  function stubTransformedPlatter(
+    root: ShadowRoot,
+    deck: HTMLElement,
+    g = geo,
+    // Unzoomed placement of the platter within the deck box. Defaults to centred,
+    // which is the studio deck; a livery that offsets its platter passes its own.
+    x0 = (SIZE - g.size) / 2,
+    y0 = (SIZE - g.size) / 2,
+  ) {
+    const platterEl = root.querySelector(".platter") as HTMLElement;
+    const stage = root.querySelector(".stage") as HTMLElement;
+    platterEl.getBoundingClientRect = () => {
+      const z = deck.classList.contains("zoomed") ? 2.2 : 1;
+      const [ox, oy] = (stage.style.transformOrigin || "0px 0px")
+        .split(" ")
+        .map((v) => parseFloat(v) || 0);
+      // scale(z) about (ox, oy): X -> z*X + (1-z)*origin
+      const left = z * x0 + (1 - z) * ox;
+      const top = z * y0 + (1 - z) * oy;
+      const size = g.size * z;
+      return { x: left, y: top, left, top, width: size, height: size,
+               right: left + size, bottom: top + size, toJSON: () => ({}) } as DOMRect;
+    };
+  }
+
+  /**
+   * The SL-1200's platter placement in a SIZE-square slot, which is what the
+   * transformed stub needs to be faithful.
+   *
+   * ON THIS LIVERY AND NOT THE STUDIO ONE, deliberately. The feedback loop's gain
+   * is set by how fast the arm's angle changes per unit of radius, which is a
+   * function of the arm mount — and the studio deck's compressed mount happens to
+   * CONVERGE where the SL-1200's true proportions diverge. Written against the
+   * studio deck these two tests passed with the bug fully present, which is worse
+   * than not having written them.
+   */
+  function mountedSL() {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    v.frame(makeState({ currentIndex: 0 }));
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    // Platter at the origin, matching the convention every other test in this
+    // file addresses it by (client coords ARE platter coords at 1x).
+    stubTransformedPlatter(h.root, deck, geoSL, 0, 0);
+    return { ...h, v, deck };
+  }
+
+  /**
+   * Press, then nudge, so the magnifier is already engaged before the real aim.
+   *
+   * The nudge matters. The zoom lands on the FIRST move, and applying it re-maps
+   * the cursor onto a different groove by an amount proportional to how far the
+   * cursor has travelled from the press point — the press point being the one
+   * place the mapping is invariant (see anchorMagnifier). One event's worth of
+   * travel is a few pixels and invisible; a test that jumped the whole radius in
+   * that first event would be measuring an artefact no hand can produce.
+   */
+  function engage(head: HTMLElement, at: (x: number) => object, from: number) {
+    head.dispatchEvent(new MouseEvent("pointerdown", at(from)) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointermove", at(from - 2)) as unknown as PointerEvent);
+  }
+
+  /**
+   * The client x that points at radius `r` on the MAGNIFIED deck.
+   *
+   * A user aims at what is on screen, and once the lens is engaged that is the
+   * zoomed picture — so a test that keeps computing click points from unzoomed
+   * geometry is aiming somewhere the user isn't. Inverts the same
+   * `z·X + (1−z)·O` the browser applies, with O the press point.
+   */
+  function zoomedClientX(r: number, pressX: number, g = geoSL, z = 2.2) {
+    return z * (g.cx - r) + (1 - z) * pressX;
+  }
+
+  it("does not move the needle while the hand holds still", () => {
+    // THE BUG behind "dropping at the end of the last track jumps to the start of
+    // the side". The lens used to re-aim at the stylus on every move, but the
+    // stylus comes from the radius and the radius is measured against the platter
+    // as transformed by that lens — so moving it moved the whole deck under a
+    // stationary cursor, which changed the radius, which moved it again. Near the
+    // run-out that loop diverges: the radius climbs on its own until it clamps at
+    // the lead-in, which resolves to track 1 at 0:00.
+    const { root } = mountedSL();
+    const head = root.querySelector(".head") as HTMLElement;
+    const arm = root.querySelector(".arm") as HTMLElement;
+
+    // Aim deep into the run-out end, where the divergence was worst.
+    const lastIdx = DURATIONS.length - 1;
+    const rEnd = positionToRadius(bandsSL, lastIdx, DURATIONS[lastIdx], geoSL);
+    const at = (x: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: geoSL.cy });
+    const pressX = geoSL.cx - geoSL.rLeadIn;
+    engage(head, at, pressX);
+
+    const hold = zoomedClientX(rEnd, pressX);
+    head.dispatchEvent(new MouseEvent("pointermove", at(hold)) as unknown as PointerEvent);
+    const settled = arm.style.getPropertyValue("--deg");
+
+    // The hand has not moved. Neither may the needle — not on the tenth frame,
+    // not on the fiftieth.
+    for (let i = 0; i < 50; i++) {
+      head.dispatchEvent(new MouseEvent("pointermove", at(hold)) as unknown as PointerEvent);
+    }
+    expect(arm.style.getPropertyValue("--deg")).toBe(settled);
+  });
+
+  it("lands where it was dropped at the end of the last track", () => {
+    // The user-visible half of the same bug: let go over the run-out end and the
+    // deck played the FIRST track of the side from 0:00.
+    const { root, playQueueIndex } = mountedSL();
+    const head = root.querySelector(".head") as HTMLElement;
+    const lastIdx = DURATIONS.length - 1;
+    const rEnd = positionToRadius(bandsSL, lastIdx, DURATIONS[lastIdx], geoSL);
+    const at = (x: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: geoSL.cy });
+
+    const pressX = geoSL.cx - geoSL.rLeadIn;
+    engage(head, at, pressX);
+    const aim = zoomedClientX(rEnd, pressX);
+    for (let i = 0; i < 20; i++) {
+      head.dispatchEvent(new MouseEvent("pointermove", at(aim)) as unknown as PointerEvent);
+    }
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+
+    expect(playQueueIndex).toHaveBeenCalledWith(lastIdx);
+  });
+
+  it("never targets the exact end of a track, which would skip it", () => {
+    // The innermost groove of a band maps to its duration — the boundary with the
+    // next track, not a position inside this one. Seeking there ends the track on
+    // the spot and the queue advances, so the cue skipped what it aimed at (and
+    // at the end of a side, wrapped). The float round-trip can even land PAST the
+    // duration, which is the same thing only more certain.
+    const { root, seek } = mounted();
+    const idx = 4;
+    const dur = DURATIONS[idx];
+    // Playing the band we are about to cue inside, so this is the seek path.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(h.host);
+    v.frame(makeState({ currentIndex: idx, positionSecs: 5 }));
+    cue(h.root, idx, dur);
+
+    expect(h.seek).toHaveBeenCalledTimes(1);
+    const target = h.seek.mock.calls[0][0] as number;
+    expect(target).toBeLessThan(dur);
+    // ...but only just: a cue at the end must still land at the end.
+    expect(target).toBeGreaterThan(dur - 2);
+    expect(root).toBeTruthy();
+    expect(seek).not.toHaveBeenCalled();
+  });
+
+  it("leaves the arm up and the deck silent when cueing a paused deck", () => {
+    // MOVING THE ARM IS NOT PRESSING PLAY. On the desk you cue a stopped deck all
+    // the time and it stays stopped. The contract has no "change track without
+    // starting it" — `playQueueIndex` is the only way to change track and it
+    // always starts — so the deck has to take that play back.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+
+    // Paused from somewhere else: the lever is up, the platter still turns.
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: false, currentIndex: 0 }));
+    expect(deck.classList.contains("lifted")).toBe(true);
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    expect(h.playQueueIndex).toHaveBeenCalledWith(4);
+
+    // The host does what it was told and starts the track. The deck must undo it
+    // rather than adopt it — and must not drop the arm on the way.
+    v.frame(makeState({ timeMs: 32, playing: true, currentIndex: 4 }));
+    expect(h.setPlaying).toHaveBeenLastCalledWith(false);
+    expect(deck.classList.contains("lifted")).toBe(true);
+
+    v.frame(makeState({ timeMs: 48, playing: false, currentIndex: 4 }));
+    expect(deck.classList.contains("lifted")).toBe(true);
+  });
+
+  it("keeps the motor off when cueing a stopped deck", () => {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    for (let t = 16; t <= 400; t += 16) {
+      v.frame(makeState({ timeMs: t, playing: false, stopped: true, currentIndex: 0 }));
+    }
+    expect(deck.classList.contains("motor-off")).toBe(true);
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    v.frame(makeState({ timeMs: 416, playing: true, currentIndex: 4 }));
+    expect(h.setPlaying).toHaveBeenLastCalledWith(false);
+    // Still a stopped deck — the needle simply sits somewhere else now.
+    expect(deck.classList.contains("motor-off")).toBe(true);
+  });
+
+  it("leaves a PLAYING deck playing when cued", () => {
+    // The restore must be conditional. A cue on a running deck has always just
+    // worked, and re-asserting a pause there would stop the music.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    v.frame(makeState({ timeMs: 16, playing: true, currentIndex: 4 }));
+    expect(h.setPlaying).not.toHaveBeenCalled();
+    expect(deck.classList.contains("lifted")).toBe(false);
+  });
+
+  it("does not zoom for a press that never becomes a drag", () => {
+    const { root, deck } = mounted();
+    const head = root.querySelector(".head") as HTMLElement;
+    const press = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx, clientY: geo.cy };
+    head.dispatchEvent(new MouseEvent("pointerdown", press) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    expect(deck.classList.contains("zoomed")).toBe(false);
   });
 });
 
@@ -1490,7 +1935,7 @@ describe("a queue too long for one side", () => {
   /** Geometry and bands for one side, for aiming a cue at a known band. */
   function sideGeo(side: Side) {
     const g = buildGeometry(SIZE);
-    return { g, b: layoutBands(LONG_DURATIONS.slice(side.start, side.start + side.count), g) };
+    return { g, b: layoutBands(LONG_DURATIONS.slice(side.start, side.start + side.count), g, SIDE_SECS) };
   }
 
   const longState = (over: Partial<PluginVisualizerState> = {}) =>
