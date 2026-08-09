@@ -1,3 +1,19 @@
+## Unreleased
+
+- **Cueing a stopped deck no longer lets a moment of audio out.** Changing track
+  was only expressible as "play this track", so cueing a paused or stopped deck
+  had to start it and take it straight back. On an app new enough to offer it the
+  deck now places the needle without starting anything, cued to the exact groove
+  it landed on rather than to 0:00. Older apps keep the previous behaviour.
+- **The deck does almost no work per frame now.** It redraws at the display's
+  refresh rate — 120Hz on the machine this was measured on — but almost nothing it
+  draws changes that often: playback position advances about four times a second,
+  the transport state goes whole songs without moving, and the strobe ring is
+  deliberately stationary at 33. It was writing all of it every frame anyway.
+  Measured over two seconds of ordinary playback: **2160 style and class writes
+  before, 240 after** — the 240 being the platter's own rotation, the one thing
+  that genuinely has to happen every frame. Nothing about the picture changes.
+
 ## 1.2.0
 
 - **The deck zooms in while you cue.** Grab the headshell and the whole deck

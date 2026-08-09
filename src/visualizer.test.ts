@@ -1119,6 +1119,69 @@ describe("pitch fader", () => {
   });
 });
 
+describe("a frame that changes nothing costs nothing", () => {
+  // frame() runs at display rate — 120Hz on the machine this was measured on —
+  // while almost nothing it writes changes that often: position advances about
+  // four times a second, the transport classes go whole songs without moving, and
+  // the strobe ring is stationary at 33 by design. Measured on the SL-1200 over
+  // two seconds of ordinary playback: 480 setProperty + 480 transform + 1200
+  // classList.toggle, of which only the platter's own rotation had to happen.
+  //
+  // Writing a style property is not free when the value is identical — it goes
+  // through the CSSOM, dirties the element and invites a style recalc — so every
+  // per-frame write is skipped when it would be a no-op.
+
+  function countWrites(fn: () => void) {
+    const setProperty = vi.spyOn(CSSStyleDeclaration.prototype, "setProperty");
+    const toggle = vi.spyOn(DOMTokenList.prototype, "toggle");
+    try {
+      fn();
+      return { setProperty: setProperty.mock.calls.length, toggle: toggle.mock.calls.length };
+    } finally {
+      setProperty.mockRestore();
+      toggle.mockRestore();
+    }
+  }
+
+  it("writes nothing at all when the state repeats", () => {
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(host);
+    // Two frames to settle every cache (the first necessarily writes).
+    v.frame(makeState({ timeMs: 100 }));
+    v.frame(makeState({ timeMs: 100 }));
+
+    // Same state, same clock: nothing has moved, so nothing may be written.
+    const writes = countWrites(() => {
+      for (let i = 0; i < 30; i++) v.frame(makeState({ timeMs: 100 }));
+    });
+    expect(writes.setProperty).toBe(0);
+    expect(writes.toggle).toBe(0);
+    expect(root.querySelector(".deck")).toBeTruthy();
+  });
+
+  it("still writes the moment something actually changes", () => {
+    // The cache must not be able to swallow a real change — that would be a far
+    // worse bug than the redundant writes it exists to remove.
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(host);
+    v.frame(makeState({ timeMs: 100, playing: true, positionSecs: 0 }));
+    v.frame(makeState({ timeMs: 100, playing: true, positionSecs: 0 }));
+
+    const moved = countWrites(() => {
+      v.frame(makeState({ timeMs: 100, playing: true, positionSecs: 40 }));
+    });
+    expect(moved.setProperty).toBeGreaterThan(0);
+
+    const paused = countWrites(() => {
+      v.frame(makeState({ timeMs: 100, playing: false, positionSecs: 40 }));
+    });
+    expect(paused.toggle).toBeGreaterThan(0);
+    expect((root.querySelector(".deck") as HTMLElement).classList.contains("lifted")).toBe(true);
+  });
+});
+
 describe("the cue magnifier", () => {
   function mounted(skin: "studio" | "sl1200" = "studio") {
     const h = makeHost();

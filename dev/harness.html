@@ -85,7 +85,7 @@
       let raf = 0;
 
       const q = (id) => document.getElementById(id);
-      const state = { playing: true, index: 0, posFrac: 0, n: 6 };
+      const state = { playing: true, index: 0, posFrac: 0, n: 6, rate: 1 };
 
       function tracks(n) {
         // Durations vary so bands are visibly unequal. `?secs=` overrides them all,
@@ -124,7 +124,10 @@
             seek: (s) => log(`seek ${s.toFixed(1)}s`),
             playQueueIndex: (i) => { log(`playQueueIndex ${i}`); state.index = i; q("idx").value = i; },
             setPlaying: (p) => { log(`setPlaying ${p}`); state.playing = p; q("playing").checked = p; },
-            setRate: (r) => log(`setRate ${r.toFixed(3)}`),
+            // Applied, not just logged: the deck reads the speed back out of the
+            // frame state, so a host that only logs leaves the 33/45 lamps and the
+            // strobe drift permanently untestable.
+            setRate: (r) => { state.rate = r; log(`setRate ${r.toFixed(3)}`); },
           },
         });
         window.__deckRoot = root;
@@ -147,7 +150,7 @@
           currentIndex: state.index,
           queueRevision: queue.length,
           timeMs: ms,
-          rate: 1,
+          rate: state.rate,
         });
         const arm = root.querySelector(".arm");
         if (arm) q("armr").textContent = arm.style.getPropertyValue("--deg");

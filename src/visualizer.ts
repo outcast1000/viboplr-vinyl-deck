@@ -294,6 +294,38 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
 
   let lastRevision = -1;
   /**
+   * The last value written to each per-frame DOM property, so a frame that
+   * changes nothing costs nothing.
+   *
+   * frame() runs at display rate — 120Hz on this machine — while almost nothing
+   * it writes changes that often. Playback position advances about four times a
+   * second, the speed lamps and the transport classes go whole songs without
+   * moving, and the strobe ring is stationary at 33 by design. Measured on the
+   * SL-1200 livery over two seconds of ordinary playback: 480 setProperty, 480
+   * transform and 1200 classList.toggle calls, of which only the platter's own
+   * rotation genuinely had to happen.
+   *
+   * Writing a style property is not free even when the value is identical: it
+   * goes through the CSSOM, dirties the element, and invites a style recalc. So
+   * every per-frame write goes through `styleVar` / `styleTransform` / `cssClass`
+   * below and is skipped when it would be a no-op.
+   *
+   * These caches assume nothing else writes the same properties. Nothing does —
+   * repress() writes different ones, and the drag paths write `--deg` through the
+   * same helper.
+   */
+  let wroteDeg = "";
+  let wroteSpin = "";
+  let wroteDots = "";
+  let wroteTravel = "";
+  let wrotePval = "";
+  let wroteLifted: boolean | null = null;
+  let wroteMotorOff: boolean | null = null;
+  let wroteOffSpeed: boolean | null = null;
+  let wroteS33: boolean | null = null;
+  let wroteS45: boolean | null = null;
+
+  /**
    * The side currently pressed onto the record, and nothing else.
    *
    * A long queue can't go on one side: past ~15 bands the pressing stops being
@@ -334,6 +366,23 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
 
   /** Backing-store scale the canvas was last painted at. */
   let paintedScale = 1;
+
+  // --- write-once-per-change helpers. Each returns the value to cache. ---
+
+  function styleVar(el: HTMLElement, prop: string, value: string, last: string): string {
+    if (value !== last) el.style.setProperty(prop, value);
+    return value;
+  }
+
+  function styleTransform(el: HTMLElement, value: string, last: string): string {
+    if (value !== last) el.style.transform = value;
+    return value;
+  }
+
+  function cssClass(el: HTMLElement, name: string, on: boolean, last: boolean | null): boolean {
+    if (on !== last) el.classList.toggle(name, on);
+    return on;
+  }
 
   /** Lay out and repaint. Called on a queue or size change — never per frame. */
   function repress(tracks: readonly PluginVisualizerTrack[]) {
@@ -631,7 +680,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // Follow the pointer NOW rather than waiting for the release to be
       // committed and echoed back by the host. The arm is the thing being
       // dragged, so it has to move with the hand; the host is told on release.
-      arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+      wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
       showCue(r);
 
       // ZOOM IN FOR THE DRAG. A cue is aimed at a band, and at a normal deck size
@@ -754,8 +803,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
 
   /** Paint the fader knob and its readout for a trim, without asking the host. */
   function showPitch(percent: number) {
-    if (pitch) pitch.style.setProperty("--travel", String(percentToTravel(percent)));
-    if (pval) pval.textContent = formatPercent(percent);
+    if (pitch) {
+      wroteTravel = styleVar(pitch, "--travel", String(percentToTravel(percent)), wroteTravel);
+    }
+    if (pval) {
+      const text = formatPercent(percent);
+      if (text !== wrotePval) pval.textContent = text;
+      wrotePval = text;
+    }
   }
 
   /**
@@ -1032,8 +1087,8 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // takes effect on the frame it was pressed instead of when the host echoes
       // it back — and, more importantly, so "paused" can't imply "lifted" for the
       // one case where it must not.
-      deck.classList.toggle("lifted", armUp || parked);
-      deck.classList.toggle("motor-off", motorOff);
+      wroteLifted = cssClass(deck, "lifted", armUp || parked, wroteLifted);
+      wroteMotorOff = cssClass(deck, "motor-off", motorOff, wroteMotorOff);
 
       // `rate` is absent on a host older than the speed contract; 1 keeps the
       // platter at 33 and the strobe frozen, which is what those hosts do.
@@ -1068,7 +1123,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       if (!dragging) {
         if (parked && restDeg !== null) {
           // On its rest, clear of the platter. It stays there until sound returns.
-          arm.style.setProperty("--deg", `${restDeg.toFixed(2)}deg`);
+          wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
         } else {
           // Side-relative, and clamped: while the playing track is on ANOTHER side
           // this pins the arm at that end of the pressing rather than pointing at a
@@ -1076,7 +1131,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
           const rel = state.currentIndex - (side?.start ?? 0);
           const idx = Math.max(0, Math.min(bands.length - 1, rel));
           const r = positionToRadius(bands, idx, state.positionSecs, geo);
-          arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+          wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
         }
       }
 
@@ -1085,11 +1140,11 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // so a speed changed in Settings can't leave these describing something
       // that isn't playing. Both lit = 78, exactly how the real deck shows it.
       const pitchState = decomposeRate(rate);
-      if (s33) s33.classList.toggle("on", pitchState.basis === 1);
-      if (s45) s45.classList.toggle("on", pitchState.basis !== 1);
+      if (s33) wroteS33 = cssClass(s33, "on", pitchState.basis === 1, wroteS33);
+      if (s45) wroteS45 = cssClass(s45, "on", pitchState.basis !== 1, wroteS45);
       // Not while the hand owns it — same rule as the tonearm.
       if (!scrubbingPitch) showPitch(pitchState.percent);
-      deck.classList.toggle("off-speed", Math.abs(pitchState.percent) > 0.05);
+      wroteOffSpeed = cssClass(deck, "off-speed", Math.abs(pitchState.percent) > 0.05, wroteOffSpeed);
 
       // A real platter turns whether or not it's playing. The app's global
       // reduced-motion CSS guard can't cross a shadow boundary, and could never
@@ -1111,7 +1166,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         if (Math.abs(target - spinVel) < 0.001) spinVel = target;
 
         spinAngle = (spinAngle + (dt / 1800) * 360 * spinVel) % 360;
-        spin.style.transform = `rotate(${spinAngle}deg)`;
+        wroteSpin = styleTransform(spin, `rotate(${spinAngle}deg)`, wroteSpin);
 
         // THE STROBE ILLUSION, which is the honest readout of the rate.
         //
@@ -1130,7 +1185,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
           // not modelled, because nothing near 33 ever sees it.)
           const reference = spinVel > 0.05 ? 1 : 0;
           dotAngle = (dotAngle + (dt / 1800) * 360 * (spinVel - reference)) % 360;
-          dots.style.transform = `rotate(${dotAngle}deg)`;
+          wroteDots = styleTransform(dots, `rotate(${dotAngle}deg)`, wroteDots);
         }
       }
       lastMs = state.timeMs;

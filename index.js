@@ -1630,6 +1630,37 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let restDeg = null;
 		let lastRevision = -1;
 		/**
+		* The last value written to each per-frame DOM property, so a frame that
+		* changes nothing costs nothing.
+		*
+		* frame() runs at display rate — 120Hz on this machine — while almost nothing
+		* it writes changes that often. Playback position advances about four times a
+		* second, the speed lamps and the transport classes go whole songs without
+		* moving, and the strobe ring is stationary at 33 by design. Measured on the
+		* SL-1200 livery over two seconds of ordinary playback: 480 setProperty, 480
+		* transform and 1200 classList.toggle calls, of which only the platter's own
+		* rotation genuinely had to happen.
+		*
+		* Writing a style property is not free even when the value is identical: it
+		* goes through the CSSOM, dirties the element, and invites a style recalc. So
+		* every per-frame write goes through `styleVar` / `styleTransform` / `cssClass`
+		* below and is skipped when it would be a no-op.
+		*
+		* These caches assume nothing else writes the same properties. Nothing does —
+		* repress() writes different ones, and the drag paths write `--deg` through the
+		* same helper.
+		*/
+		let wroteDeg = "";
+		let wroteSpin = "";
+		let wroteDots = "";
+		let wroteTravel = "";
+		let wrotePval = "";
+		let wroteLifted = null;
+		let wroteMotorOff = null;
+		let wroteOffSpeed = null;
+		let wroteS33 = null;
+		let wroteS45 = null;
+		/**
 		* The side currently pressed onto the record, and nothing else.
 		*
 		* A long queue can't go on one side: past ~15 bands the pressing stops being
@@ -1668,6 +1699,18 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let lastTitles = [];
 		/** Backing-store scale the canvas was last painted at. */
 		let paintedScale = 1;
+		function styleVar(el, prop, value, last) {
+			if (value !== last) el.style.setProperty(prop, value);
+			return value;
+		}
+		function styleTransform(el, value, last) {
+			if (value !== last) el.style.transform = value;
+			return value;
+		}
+		function cssClass(el, name, on, last) {
+			if (on !== last) el.classList.toggle(name, on);
+			return on;
+		}
 		/** Lay out and repaint. Called on a queue or size change — never per frame. */
 		function repress(tracks) {
 			const onSide = side ? tracks.slice(side.start, side.start + side.count) : tracks;
@@ -1869,7 +1912,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const move = (ev) => {
 				const r = clampToPressing(radiusAt(ev.clientX, ev.clientY), bands, geo);
 				last = radiusToPosition(bands, r);
-				arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+				wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
 				showCue(r);
 				if (!zoomed) {
 					zoomed = true;
@@ -1942,8 +1985,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		}
 		/** Paint the fader knob and its readout for a trim, without asking the host. */
 		function showPitch(percent) {
-			if (pitch) pitch.style.setProperty("--travel", String(percentToTravel(percent)));
-			if (pval) pval.textContent = formatPercent(percent);
+			if (pitch) wroteTravel = styleVar(pitch, "--travel", String(percentToTravel(percent)), wroteTravel);
+			if (pval) {
+				const text = formatPercent(percent);
+				if (text !== wrotePval) pval.textContent = text;
+				wrotePval = text;
+			}
 		}
 		/**
 		* Drag the pitch fader.
@@ -2058,8 +2105,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					pendingPlay = false;
 				} else if (!state.playing && !motorOff && !parked && !pendingPlay) armUp = true;
 				wasPlaying = state.playing;
-				deck.classList.toggle("lifted", armUp || parked);
-				deck.classList.toggle("motor-off", motorOff);
+				wroteLifted = cssClass(deck, "lifted", armUp || parked, wroteLifted);
+				wroteMotorOff = cssClass(deck, "motor-off", motorOff, wroteMotorOff);
 				rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;
 				if (state.queueRevision !== lastRevision) sides = splitSides(state.queue.map((t) => t.durationSecs));
 				side = sideAt(sides, state.currentIndex);
@@ -2077,19 +2124,19 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					label.style.backgroundImage = art ? `url("${art}")` : "";
 				}
 				if (!dragging) {
-					if (parked && restDeg !== null) arm.style.setProperty("--deg", `${restDeg.toFixed(2)}deg`);
+					if (parked && restDeg !== null) wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
 					else {
 						const rel = state.currentIndex - (side?.start ?? 0);
 						const idx = Math.max(0, Math.min(bands.length - 1, rel));
 						const r = positionToRadius(bands, idx, state.positionSecs, geo);
-						arm.style.setProperty("--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`);
+						wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
 					}
 				}
 				const pitchState = decomposeRate(rate);
-				if (s33) s33.classList.toggle("on", pitchState.basis === 1);
-				if (s45) s45.classList.toggle("on", pitchState.basis !== 1);
+				if (s33) wroteS33 = cssClass(s33, "on", pitchState.basis === 1, wroteS33);
+				if (s45) wroteS45 = cssClass(s45, "on", pitchState.basis !== 1, wroteS45);
 				if (!scrubbingPitch) showPitch(pitchState.percent);
-				deck.classList.toggle("off-speed", Math.abs(pitchState.percent) > .05);
+				wroteOffSpeed = cssClass(deck, "off-speed", Math.abs(pitchState.percent) > .05, wroteOffSpeed);
 				if (!host.reducedMotion) {
 					const dt = lastMs === null ? 0 : Math.max(0, Math.min(250, state.timeMs - lastMs));
 					const target = motorOff ? 0 : rate;
@@ -2097,11 +2144,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					spinVel += (target - spinVel) * (1 - Math.exp(-dt / tau));
 					if (Math.abs(target - spinVel) < .001) spinVel = target;
 					spinAngle = (spinAngle + dt / 1800 * 360 * spinVel) % 360;
-					spin.style.transform = `rotate(${spinAngle}deg)`;
+					wroteSpin = styleTransform(spin, `rotate(${spinAngle}deg)`, wroteSpin);
 					if (dots) {
 						const reference = spinVel > .05 ? 1 : 0;
 						dotAngle = (dotAngle + dt / 1800 * 360 * (spinVel - reference)) % 360;
-						dots.style.transform = `rotate(${dotAngle}deg)`;
+						wroteDots = styleTransform(dots, `rotate(${dotAngle}deg)`, wroteDots);
 					}
 				}
 				lastMs = state.timeMs;
