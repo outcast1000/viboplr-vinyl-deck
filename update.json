@@ -1,6 +1,6 @@
 {
-  "version": "1.4.1",
+  "version": "1.4.2",
   "file": "https://github.com/outcast1000/viboplr-vinyl-deck/releases/latest/download/vinyl-deck.zip",
   "minAppVersion": "1.0.16",
-  "changelog": "- **The deck can now tell you it has updated.** Its manifest was missing\n  `updateUrl`, and the app skips any installed plugin whose manifest doesn't\n  carry one — before it even compares versions. So every release since 1.0.0 was\n  invisible to \"Check for updates\": the gallery installed the newest deck\n  happily, and then that copy never heard about another one again. Nothing about\n  the deck itself changed in this release.\n- **Copies installed before this one stay silent.** The check reads the manifest\n  that is already on disk, so a 1.4.0 install can't learn about the fix from the\n  fix. Reinstall the deck once from the gallery and updates work from then on."
+  "changelog": "- **The deck no longer opens an audio device to be silent with.** Sounds are off\n  by default, but the deck built its sound engine the moment it appeared — and\n  building it is what asks the app for audio, which is what opens the device. So\n  every user got a live audio render thread and four always-running noise beds\n  steered to zero, for a deck they were only looking at. The engine is now built\n  on the first setting that turns sounds *on*; if you never turn them on, nothing\n  is ever opened. Switching them on mid-listen works exactly as before, and\n  switching them off no longer tears the graph down, so switching back on is\n  still instant."
 }

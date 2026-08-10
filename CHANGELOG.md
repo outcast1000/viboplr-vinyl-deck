@@ -1,3 +1,15 @@
+## 1.4.2
+
+- **The deck no longer opens an audio device to be silent with.** Sounds are off
+  by default, but the deck built its sound engine the moment it appeared — and
+  building it is what asks the app for audio, which is what opens the device. So
+  every user got a live audio render thread and four always-running noise beds
+  steered to zero, for a deck they were only looking at. The engine is now built
+  on the first setting that turns sounds *on*; if you never turn them on, nothing
+  is ever opened. Switching them on mid-listen works exactly as before, and
+  switching them off no longer tears the graph down, so switching back on is
+  still instant.
+
 ## 1.4.1
 
 - **The deck can now tell you it has updated.** Its manifest was missing
