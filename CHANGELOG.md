@@ -1,3 +1,15 @@
+## 1.4.1
+
+- **The deck can now tell you it has updated.** Its manifest was missing
+  `updateUrl`, and the app skips any installed plugin whose manifest doesn't
+  carry one — before it even compares versions. So every release since 1.0.0 was
+  invisible to "Check for updates": the gallery installed the newest deck
+  happily, and then that copy never heard about another one again. Nothing about
+  the deck itself changed in this release.
+- **Copies installed before this one stay silent.** The check reads the manifest
+  that is already on disk, so a 1.4.0 install can't learn about the fix from the
+  fix. Reinstall the deck once from the gallery and updates work from then on.
+
 ## 1.4.0
 
 - **The deck makes its own noises, and you choose which.** The platter motor with
