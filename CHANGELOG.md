@@ -1,3 +1,37 @@
+## 1.4.0
+
+- **The deck makes its own noises, and you choose which.** The platter motor with
+  its spin-up and spin-down sag, the needle drop and cue lift, the scrape of the
+  headshell dragged across a turning record, groove hiss, crackle, track ticks,
+  the run-out, and the three switches. Nothing is sampled — it is all synthesised,
+  because the two that matter most are responses to a live number: the brake curve
+  depends on where the platter was, and a scrape on how fast your hand is moving.
+  There is a switch for every one of them under the plugin's settings, plus a
+  master. All off by default, and the record-surface noises are off again on top —
+  a click when you press a thing is punctuation, hiss is a filter over every
+  second of your library. **Requires an app new enough to grant a visualizer audio;
+  on older ones the deck is simply silent, exactly as before.**
+- **A cue on a running deck lands where you put it.** Dropping the needle halfway
+  into another track played that track from 0:00 — the readout promised 2:14 and
+  the music started at the top. The gesture now carries the position across the
+  track change, so it plays on from the groove you aimed at.
+- **The deck no longer goes dead when the queue ends.** With the last track
+  finished, START/STOP and the cue lever did nothing and a cue drag snapped the
+  arm back to its rest. A stop now parks the arm once and leaves the deck usable:
+  press START and the platter spins, drop the lever and the needle sits in the
+  groove of a record that isn't turning. The drag was never actually refused — the
+  cue was taken every time, and only the arm came home.
+- **An empty queue shows an empty deck.** It used to show a blank black record,
+  which is not a thing that exists and read as loading. There is a slipmat under
+  there instead, and the deck stays alive on top of it — the platter still turns
+  when you start it.
+- **The SL-1200 read against a photograph.** A taller START/STOP, the 33/45 pair
+  down at the plinth edge where they belong, the brand mark off the corner, and a
+  numbered pitch scale. The headshell is black now rather than silver — on a
+  silver arm over a silver plinth it had been one continuous bright shape — with a
+  knurled collar at the tube joint, the cartridge's connector pins showing, and a
+  finger lift that stands proud of the shell instead of lying flat along it.
+
 ## 1.3.0
 
 - **Cueing a stopped deck no longer lets a moment of audio out.** Changing track
