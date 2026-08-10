@@ -98,7 +98,16 @@ const PLINTH_HTML =
   // scale last, its red zero mark — which deliberately overhangs toward the slot —
   // was drawn ACROSS the fader knob. On the real deck the graduations are printed
   // on the plinth and the fader sits proud of them, so the scale belongs behind.
-  '<div class="pscale"></div>' +
+  // The graduations, numbered. PITCH_RANGE is 8, so the scale runs 8 · 6 · 4 · 2
+  // · 0 · 2 · 4 · 6 · 8 from top to bottom — printed unsigned, as the deck does,
+  // because the − and + marks beside the fader already say which end is which.
+  // Tops are inline so the nine values live in one readable row instead of nine
+  // nth-child rules.
+  '<div class="pscale">' +
+  ["8", "6", "4", "2", "0", "2", "4", "6", "8"]
+    .map((n, i) => `<span style="top:${(i * 12.5).toFixed(1)}%">${n}</span>`)
+    .join("") +
+  "</div>" +
   // The fader. `-` at the top and `+` at the bottom, the Technics way round:
   // you push it away from you to slow the record down. That's the one thing here
   // nobody can guess from the shape, so it's marked.
@@ -111,7 +120,9 @@ const PLINTH_HTML =
   '<button class="reset" type="button" aria-label="Reset pitch"></button>' +
   '<div class="rest"></div>' +
   '<div class="foot"></div>' +
-  '<div class="brand">Direct Drive</div>' +
+  // Bottom right, where the real deck signs itself: a wordmark over the model
+  // line. Ours, not the manufacturer's — see the note on `.brand` in style.ts.
+  '<div class="brand"><b>Viboplr</b><span>Direct Drive Turntable System</span></div>' +
   "</div>";
 
 /**
@@ -369,6 +380,8 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let wrotePval = "";
   let wroteLifted: boolean | null = null;
   let wroteMotorOff: boolean | null = null;
+  /** "No record on the platter" — see the empty branch in frame(). */
+  let wroteEmpty: boolean | null = null;
   let wroteOffSpeed: boolean | null = null;
   let wroteS33: boolean | null = null;
   let wroteS45: boolean | null = null;
@@ -1000,6 +1013,13 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         (cfg.furniture ? '<div class="rim"><i class="dots"></i></div>' : "") +
         '<div class="body"></div>' +
         '<div class="spin">' +
+        // THE SLIPMAT, under the record and shown on its own when there is none.
+        // A deck with an empty queue has no record on it — it does not have a
+        // blank one, which is a thing that does not exist and read as "loading"
+        // or "broken". Inside .spin because a slipmat turns with the platter.
+        // The wordmark is printed twice, upright and inverted, exactly as a real
+        // one is: a deck gets read from both sides of the booth.
+        '<div class="slipmat"><span>Viboplr</span><span>Viboplr</span></div>' +
         "<canvas></canvas>" +
         '<div class="shimmer"></div>' +
         '<div class="label"></div>' +
@@ -1022,7 +1042,10 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         '<div class="counter"></div><div class="pivot"></div>' +
         '<div class="tube"></div>' +
         (cfg.furniture ? SARM_SVG : "") +
-        '<div class="shadow"></div><div class="head"></div>' +
+        // `.collar` is the bayonet nut joining shell to tube. A real child rather
+        // than a pseudo-element because the shell already spends both of its own
+        // on the finger lift and the cartridge.
+        '<div class="shadow"></div><div class="head"><i class="collar"></i></div>' +
         "</div></div></div></div>" +
         "</div>" +
         "</div>" +
@@ -1256,10 +1279,23 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         lastSideStart = sideStart;
         repress(state.queue);
       }
-      if (bands.length === 0) return;
+      // NO RECORD ON THE PLATTER. Not a bail — that is what this used to be, and
+      // it returned above the platter's rotation, the strobe, the speed lamps and
+      // the sound. So an empty queue froze the deck solid: you could press START,
+      // watch the button light and the motor-off class clear, and the record stood
+      // still. The mechanisms reconcile ABOVE here, so the picture disagreed with
+      // the flags — exactly the deck-drawing-a-lie this file works to avoid.
+      //
+      // An empty deck is a real object: bare slipmat, spindle, arm on its rest,
+      // and a platter that still turns when you start it. Only the parts that
+      // need a pressing are skipped.
+      const empty = bands.length === 0;
+      wroteEmpty = cssClass(deck, "empty", empty, wroteEmpty);
 
       currentIndex = state.currentIndex;
-      const art = state.queue[state.currentIndex]?.artUrl ?? null;
+      // Cleared when there is no record, or the last track's artwork would sit on
+      // the slipmat after the queue was emptied.
+      const art = empty ? null : state.queue[state.currentIndex]?.artUrl ?? null;
       if (art !== lastArt) {
         lastArt = art;
         label.style.backgroundImage = art ? `url("${art}")` : "";
@@ -1267,9 +1303,15 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
 
       // Not while dragging — the hand owns the arm until it lets go.
       if (!dragging) {
-        if (parked && restDeg !== null) {
-          // On its rest, clear of the platter. It stays there until sound returns.
-          wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
+        // Nothing to track when there is no record: the arm sits on its rest
+        // whatever the transport is doing, which is where it lives on an empty
+        // deck. A livery with no rest to draw (`restDeg === null`) simply leaves
+        // the arm where it was rather than pointing it at a pressing that isn't
+        // there — the alternative would index an empty band table.
+        if (empty || parked) {
+          if (restDeg !== null) {
+            wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
+          }
         } else {
           // Side-relative, and clamped: while the playing track is on ANOTHER side
           // this pins the arm at that end of the pressing rather than pointing at a
@@ -1329,7 +1371,10 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         // The stylus crossing the land between two bands.
         if (sndIndex !== null && state.currentIndex !== sndIndex) sounds.click("band");
         sndIndex = state.currentIndex;
-        sounds.frame(spinVel, !armedNow);
+        // `!empty` on the needle: groove hiss and crackle come from a stylus in
+        // vinyl, and there is none. The motor bed is unaffected — a platter with
+        // no record on it still turns, and still sounds like it.
+        sounds.frame(spinVel, !armedNow && !empty);
 
         // THE STROBE ILLUSION, which is the honest readout of the rate.
         //

@@ -65,7 +65,7 @@
           <option value="studio">studio</option>
         </select>
       </div>
-      <div class="row"><label>tracks</label><input id="n" type="number" value="6" min="1" max="60" /></div>
+      <div class="row"><label>tracks</label><input id="n" type="number" value="6" min="0" max="60" /></div>
       <div class="row"><label>index</label><input id="idx" type="range" min="0" max="5" value="0" /><code id="idxv">0</code></div>
       <div class="row"><label>position</label><input id="pos" type="range" min="0" max="1" step="0.001" value="0" /><code id="posv">0%</code></div>
       <div class="row"><label>playing</label><input id="playing" type="checkbox" checked /></div>
@@ -347,7 +347,9 @@
 
       q("skin").onchange = () => { mount(); };
       q("n").oninput = () => {
-        state.n = Math.max(1, Number(q("n").value) || 1);
+        // 0 is a real state, not a guard to clamp away: an empty queue is what
+        // the deck looks like with no record on it, and it needs looking at.
+        state.n = Math.max(0, Number(q("n").value) || 0);
         queue = tracks(state.n);
         q("idx").max = String(state.n - 1);
         if (state.index > state.n - 1) state.index = state.n - 1;

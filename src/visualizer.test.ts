@@ -15,6 +15,7 @@ import type {
 import { createVinylDeckVisualizer, RATE_45 } from "./visualizer";
 import { armAngleDeg, buildArmMount, buildGeometry, layoutBands, positionToRadius } from "./geometry";
 import { SKINS, type DeckSkin } from "./skins";
+import { DECK_CSS } from "./style";
 import { PITCH_RANGE, composeRate } from "./pitch";
 import { SIDE_SECS, type Side, splitSides } from "./sides";
 import { resetDeckSoundSettings, setDeckSoundSettings } from "./soundSettings";
@@ -2351,6 +2352,101 @@ describe("a queue too long for one side", () => {
     ).not.toThrow();
     const deg = (root.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
     expect(Number.isFinite(parseFloat(deg))).toBe(true);
+  });
+});
+
+describe("an empty queue", () => {
+  /** A deck that played something, then had its queue emptied. */
+  function emptied() {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    v.frame(makeState({ timeMs: 16, playing: true, currentIndex: 0, queue: [], queueRevision: 99 }));
+    return { ...h, v, deck };
+  }
+
+  const emptyState = (timeMs: number, over: Record<string, unknown> = {}) =>
+    makeState({ timeMs, queue: [], queueRevision: 99, currentIndex: 0, ...over });
+
+  it("takes the record off and leaves the slipmat", () => {
+    // A deck with an empty queue has no record on it. It does not have a blank
+    // one — a disc with no grooves is not a thing, and it read as loading.
+    const { deck } = emptied();
+    expect(deck.classList.contains("empty")).toBe(true);
+    expect(deck.querySelector(".slipmat")).toBeTruthy();
+  });
+
+  it("keeps turning the platter, so the picture agrees with the flags", () => {
+    // This is the bug the old early-return caused, not a nicety: the mechanisms
+    // reconcile ABOVE it and the rotation happened below, so START lit the button
+    // and cleared motor-off while the record stood still.
+    const { v, deck } = emptied();
+    const spin = deck.querySelector(".spin") as HTMLElement;
+    v.frame(emptyState(32, { playing: true }));
+    const a = spin.style.transform;
+    for (let t = 48; t <= 400; t += 16) v.frame(emptyState(t, { playing: true }));
+    expect(spin.style.transform).not.toBe(a);
+    expect(deck.classList.contains("motor-off")).toBe(false);
+  });
+
+  it("drops the last track's artwork rather than leaving it on the slipmat", () => {
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const label = h.root.querySelector(".label") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0 }));
+    // Whatever the fixture's first track carries, the empty frame must clear it.
+    v.frame(makeState({ timeMs: 16, queue: [], queueRevision: 99, currentIndex: 0 }));
+    expect(label.style.backgroundImage).toBe("");
+  });
+
+  it("rests the arm, whatever the transport is doing", () => {
+    // Nothing to track. Asserted while PLAYING, because the arm's position comes
+    // from the band table and there isn't one.
+    const { v, deck } = emptied();
+    v.frame(emptyState(32, { playing: true }));
+    const deg = (deck.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg");
+    expect(Number.isFinite(parseFloat(deg))).toBe(true);
+    for (let t = 48; t <= 200; t += 16) v.frame(emptyState(t, { playing: true }));
+    expect((deck.querySelector(".arm") as HTMLElement).style.getPropertyValue("--deg")).toBe(deg);
+  });
+
+  it("puts the record back when the queue refills", () => {
+    const { v, deck } = emptied();
+    expect(deck.classList.contains("empty")).toBe(true);
+    v.frame(makeState({ timeMs: 32, playing: true, currentIndex: 0, queueRevision: 100 }));
+    expect(deck.classList.contains("empty")).toBe(false);
+  });
+
+  it("keeps the slipmat hidden unless the platter is bare", () => {
+    // The wordmark read straight through the record: the canvas paints grooves
+    // in ALPHA ONLY and the vinyl's colour comes from `.body`, a sibling outside
+    // `.spin`, so a slipmat inside `.spin` sits ABOVE the disc.
+    //
+    // Asserted against the stylesheet text rather than the DOM, because jsdom
+    // applies no styles — `getComputedStyle` here would report the same thing
+    // whether the rule existed or not, which is how this shipped visibly broken
+    // with six passing tests over it.
+    expect(DECK_CSS).toMatch(/\.slipmat\s*\{[^}]*display:\s*none/);
+    expect(DECK_CSS).toMatch(/\.empty\s+\.slipmat\s*\{[^}]*display:\s*block/);
+    // And the element is always in the tree, so only the rule governs it.
+    const { v, deck } = emptied();
+    expect(deck.querySelector(".slipmat")).toBeTruthy();
+    v.frame(makeState({ timeMs: 32, playing: true, currentIndex: 0, queueRevision: 100 }));
+    expect(deck.querySelector(".slipmat")).toBeTruthy();
+    expect(deck.classList.contains("empty")).toBe(false);
+  });
+
+  it("survives every gesture with no record under the needle", () => {
+    const { v, deck } = emptied();
+    expect(() => {
+      (deck.querySelector(".start") as HTMLElement).click();
+      (deck.querySelector(".lever") as HTMLElement).click();
+      (deck.querySelector(".s45") as HTMLElement).click();
+      for (let t = 32; t <= 200; t += 16) v.frame(emptyState(t));
+    }).not.toThrow();
   });
 });
 

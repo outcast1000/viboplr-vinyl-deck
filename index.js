@@ -923,6 +923,64 @@ var __viboplrPlugin = (function(exports) {
 .spin { position: absolute; inset: 0; border-radius: 50%; transform-origin: 50% 50%; will-change: transform; }
 canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 
+/* THE SLIPMAT. What is on the platter when there is no record — felt, not vinyl,
+   so it is matte where the disc is glossy and that difference is most of what
+   says "empty" at a glance.
+
+   SHOWN ONLY WHEN THE PLATTER IS BARE, and that is forced rather than chosen.
+   The obvious arrangement is to leave it there always, genuinely under the
+   record — but the canvas paints the grooves in ALPHA ONLY (see the note on
+   onSkinChange: that is what lets a skin restyle the vinyl without re-baking the
+   surface), and the disc's actual colour comes from .body, which is a sibling
+   OUTSIDE .spin. So a slipmat inside .spin is layered above the vinyl and
+   below nothing but a transparent groove layer: the wordmark read straight
+   through the record. It cannot be "under" the disc without leaving the layer
+   that makes it turn.
+
+   The noise is a repeating-conic-gradient at a very low alpha, which is a cheap
+   way to get felt's directionless fuzz without an image — the release zip is
+   manifest.json + index.js, so there is nowhere to put a texture. */
+.slipmat {
+  display: none;
+  position: absolute; inset: 0; border-radius: 50%;
+  background:
+    repeating-conic-gradient(from 0deg, rgba(255,255,255,.030) 0deg .5deg, rgba(0,0,0,.030) .5deg 1deg),
+    radial-gradient(circle at 42% 34%, #23262b 0%, #15171a 58%, #0d0f11 100%);
+  box-shadow: inset 0 0 calc(18px * var(--k)) rgba(0,0,0,.55);
+}
+/* The wordmark, printed twice — upright and inverted. A deck is read from both
+   sides of the booth, so a real slipmat says its name both ways up; it is also
+   the thing that makes a stationary platter obviously a slipmat rather than a
+   dark hole. Sunk into the felt rather than sitting on it: same ink, slightly
+   darker than the mat, with a one-pixel light edge below. */
+.slipmat span {
+  position: absolute; left: 0; right: 0;
+  text-align: center;
+  font: 800 calc(30px * var(--k))/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: -.02em;
+  color: rgba(120,132,148,.30);
+  text-shadow: 0 calc(1px * var(--k)) 0 rgba(255,255,255,.05);
+}
+.slipmat span:first-child { top: 27%; }
+.slipmat span:last-child  { bottom: 27%; transform: rotate(180deg); }
+
+/* NO RECORD. The disc and its label come off; the slipmat and the spindle stay.
+   Everything else about the deck keeps working — the platter still turns, the
+   strobe still drifts — because an empty deck is a working deck with nothing on
+   it, not a disabled one. */
+.empty .slipmat { display: block; }
+.empty canvas,
+.empty .shimmer,
+.empty .label,
+.empty .sheen,
+.empty .iris { display: none; }
+/* The disc's own edge highlight and cast shadow describe a record that isn't
+   there, so the platter reads as its own rim instead. */
+.empty .body {
+  background: none;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.10);
+}
+
 /* Anisotropic shimmer — a whisper of radial texture that turns WITH the grooves.
    Kept near-invisible on purpose: a real record has no radial lines, and at any
    real opacity this reads as wireframe spokes rather than vinyl. The rotating
@@ -1425,7 +1483,10 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
      the box is inset from where the button used to be drawn and the black frame
      grows back out to the old bounds — the whole control still occupies
      1.3%..12.3% across and 85%..93.4% down, which is where the photo puts it. */
-  left: 1.95%; top: 85.7%; width: 9.7%; height: 7%;
+  /* Taller than it was. Measured off the reference the face is 10% of the plinth
+     across and very nearly the same down — it is close to square, and drawn at 7%
+     it read as a wide switch rather than the chunky slab the real one is. */
+  left: 1.5%; top: 85.6%; width: 10%; height: 9.6%;
   padding: 0;
   border: none;
   border-radius: calc(1.5px * var(--pk));
@@ -1485,10 +1546,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
    size, and that is the same trade the gap floor in geometry.ts makes. */
 .skin-sl1200 .speeds {
   position: absolute;
-  /* 13.4%, not the photo's 12.1%: START/STOP ends at 12.3% and the two were
-     touching, which their shadows turned into an apparent overlap. On the real
-     deck there is daylight between them. */
-  left: 13.4%; top: 89.4%; width: 12.8%; height: 4%;
+  /* DOWN at the plinth's bottom edge, alongside START/STOP rather than above it.
+     At 89.4% they sat up against the platter's lower-left curve with the two
+     crowding each other; on the reference they are the lowest thing on the deck,
+     clear of the disc entirely, and START/STOP is what they sit beside. */
+  left: 12.6%; top: 94%; width: 10.6%; height: 2.9%;
   display: flex;
   gap: calc(1.5px * var(--pk));
   padding: calc(1.5px * var(--pk));
@@ -1636,6 +1698,17 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   background: repeating-linear-gradient(180deg,
     rgba(51,54,59,.7) 0 1px, transparent 1px 6.25%);
 }
+/* The numerals, to the LEFT of their graduations — the side the reference prints
+   them on, and the only side with plinth to spare, since the fader is hard
+   against the deck's right edge. Centred on their own tick by the translate. */
+.skin-sl1200 .pscale span {
+  position: absolute;
+  right: 118%;
+  transform: translateY(-50%);
+  font: 500 calc(3.4px * var(--pk))/1 system-ui, sans-serif;
+  color: var(--mk7-ink);
+  opacity: .55;
+}
 /* The zero mark: longer, and lit red like the deck's quartz-lock lamp. */
 .skin-sl1200 .pscale::after {
   content: "";
@@ -1652,12 +1725,15 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
    so there is always something visibly offering the way back. */
 .skin-sl1200 .reset {
   position: absolute;
-  /* Right of the arm rest, not under it: at the photo's 83.2% the two boxes
-     overlapped, which read as one broken control rather than two. */
-  left: 86.6%; top: 81.5%; width: 3.4%; height: 3.4%;
+  /* ROUND, and higher. On the reference this is a circular push-button level
+     with the fader's lower third, not the rounded square down at 81.5% — square
+     was the tell that made it read as a fourth transport button rather than the
+     odd one out it is. Still clear of the arm rest, which is why it sits a shade
+     left of where the photo's own centre falls. */
+  left: 85.2%; top: 78.8%; width: 3.6%; height: 3.6%;
   padding: 0;
   border: none;
-  border-radius: calc(1.5px * var(--pk));
+  border-radius: 50%;
   background: linear-gradient(180deg, var(--mk7-silver-hi), var(--mk7-silver-lo));
   box-shadow: inset 0 0 0 1px rgba(0,0,0,.3);
   pointer-events: auto;
@@ -1694,19 +1770,39 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   box-shadow: inset 0 0 0 1px rgba(0,0,0,.32);
 }
 
-/* Model line, bottom centre.
+/* Where the deck signs itself: bottom right, wordmark over the model line.
+   That corner is the one the real object uses and the only large empty area of
+   plinth left once the arm, the fader and the transport have their places — a
+   centred line had to sit in the gap between controls and looked like a caption.
+
    Deliberately NOT the manufacturer's wordmark: reproducing a trademark in a
-   shipped plugin is a different decision from imitating a shape, and this line
-   costs nothing to keep generic. */
+   shipped plugin is a different decision from imitating a shape. It is ours,
+   which is also why the slipmat carries it — a custom-printed slipmat is what
+   every DJ actually owns, so this is the more authentic object, not the safer
+   one. */
 .skin-sl1200 .brand {
   position: absolute;
-  left: 58%; top: 88%; width: 30%;
-  text-align: center;
+  /* Not hard against the corner. On the reference the wordmark ends about a
+     sixth of the plinth in from the right edge, which leaves the corner itself
+     empty — that margin is what stops it reading as a sticker applied to the
+     edge. */
+  right: 16%; bottom: 3.5%;
+  text-align: right;
   color: var(--mk7-ink);
-  opacity: .5;
-  font: 500 calc(4.5px * var(--pk))/1.4 system-ui, sans-serif;
-  letter-spacing: .2em;
+}
+.skin-sl1200 .brand b {
+  display: block;
+  font: 700 calc(11px * var(--pk))/1 Georgia, "Times New Roman", serif;
+  letter-spacing: .01em;
+  opacity: .82;
+}
+.skin-sl1200 .brand span {
+  display: block;
+  margin-top: calc(1.5px * var(--pk));
+  font: 500 calc(4px * var(--pk))/1.3 system-ui, sans-serif;
+  letter-spacing: .16em;
   text-transform: uppercase;
+  opacity: .45;
 }
 
 /* --- the arm, in silver --- */
@@ -1822,36 +1918,86 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   box-shadow: 0 0 0 1px rgba(0,0,0,.35);
 }
 
-/* Headshell: a squarer silver block with a finger lift. */
+/* Headshell: BLACK, not silver.
+   The real one is a matte black shell on a knurled silver bayonet collar, and
+   the colour is the whole reason it reads at deck size — a silver block on a
+   silver arm over a silver plinth is one continuous bright shape, which is why
+   ours used to look like a thickening of the tube rather than a part you could
+   take off. Black is also what makes the cartridge and the finger lift legible
+   as separate things hanging off it. */
 .skin-sl1200 .head {
-  width: calc(34px * var(--pk)); height: calc(19px * var(--pk));
-  top: calc(-9.5px * var(--pk));
-  border-radius: calc(2px * var(--pk));
-  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 46%, var(--mk7-chrome-lo));
-  box-shadow: inset 0 1px 1px rgba(255,255,255,.95),
-              0 0 0 1px rgba(0,0,0,.48),
-              0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.4);
+  width: calc(30px * var(--pk)); height: calc(17px * var(--pk));
+  top: calc(-8.5px * var(--pk));
+  border-radius: calc(1.5px * var(--pk));
+  background:
+    linear-gradient(180deg, #4a4d52 0%, #26282c 42%, #17181b 70%, #303338 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22),
+              inset 0 -1px 0 rgba(255,255,255,.10),
+              0 0 0 1px rgba(0,0,0,.62),
+              0 calc(2px * var(--pk)) calc(4px * var(--pk)) rgba(0,0,0,.45);
+}
+/* The bayonet collar — the knurled silver nut that locks the shell to the tube.
+   It is the joint, so it goes at the REAR edge where the tube arrives, and the
+   vertical banding is what says "knurled" at three pixels tall. */
+.skin-sl1200 .head .collar {
+  position: absolute;
+  left: calc(-7px * var(--pk)); top: 50%;
+  margin-top: calc(-5px * var(--pk));
+  width: calc(9px * var(--pk)); height: calc(10px * var(--pk));
+  border-radius: calc(1.5px * var(--pk));
+  background:
+    repeating-linear-gradient(90deg,
+      rgba(0,0,0,.28) 0 calc(.7px * var(--pk)),
+      rgba(255,255,255,.20) calc(.7px * var(--pk)) calc(1.4px * var(--pk))),
+    linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 50%, var(--mk7-chrome-lo));
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5);
 }
 /* Finger lift, at the FRONT beside the stylus — which is where it is on a real
    headshell, and where you'd actually pinch to cue by hand. It used to sit on the
    rear edge, so the tube appeared to plug into a protruding tab rather than into
-   the shell: half of why the join looked like it came in from the wrong side. */
+   the shell: half of why the join looked like it came in from the wrong side.
+
+   STANDS PERPENDICULAR TO THE SHELL. It was a flat bar lying along the shell's
+   own axis, which gave it the same silhouette as the shell and the cartridge —
+   so the three merged into one block and nothing read as a thing you could
+   pinch. A lift is a tab you get a fingertip under; it has to break the outline
+   to say so, and breaking the outline is also the only part of it that survives
+   being drawn at deck size, where the whole shell is about thirty pixels. */
 .skin-sl1200 .head::before {
   content: "";
   position: absolute;
-  right: calc(-8px * var(--pk)); top: 12%;
-  width: calc(10px * var(--pk)); height: calc(3px * var(--pk));
-  border-radius: calc(1.5px * var(--pk));
-  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-chrome-lo));
-  box-shadow: 0 1px 1px rgba(0,0,0,.4);
+  right: calc(3px * var(--pk)); top: calc(-8px * var(--pk));
+  width: calc(4px * var(--pk)); height: calc(10px * var(--pk));
+  border-radius: calc(1.5px * var(--pk)) calc(1.5px * var(--pk))
+                 calc(.5px * var(--pk)) calc(.5px * var(--pk));
+  /* Leaning forward, over the stylus, as the moulded ones do. Pivoting about its
+     own base keeps the foot planted on the shell while the tip tilts. */
+  transform: rotate(-8deg);
+  transform-origin: 50% 100%;
+  background: linear-gradient(180deg, var(--mk7-chrome-hi), var(--mk7-silver) 55%, var(--mk7-chrome-lo));
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45),
+              0 calc(1px * var(--pk)) calc(2px * var(--pk)) rgba(0,0,0,.35);
 }
 /* Cartridge stays at the arm's far end — armAngleDeg solves for the stylus being
-   exactly there, so this must not drift back along the headshell. */
+   exactly there, so this must not drift back along the headshell.
+   Body in pale grey against the now-black shell, with the connector pins as a
+   row of colour along its top edge: four tiny stripes are enough to read as pins
+   at deck size, and they are the detail that says "cartridge" rather than
+   "another block". */
 .skin-sl1200 .head::after {
-  right: calc(-1px * var(--pk));
-  width: calc(9px * var(--pk));
-  height: calc(12px * var(--pk));
-  background: linear-gradient(180deg, #2f343b, #b6bbc2);
+  right: calc(-1.5px * var(--pk));
+  width: calc(10px * var(--pk));
+  height: calc(13px * var(--pk));
+  border-radius: calc(1px * var(--pk)) calc(1px * var(--pk)) calc(3px * var(--pk)) calc(3px * var(--pk));
+  background:
+    linear-gradient(90deg,
+      rgba(214,68,60,.85) 0 22%,
+      rgba(226,226,226,.85) 22% 44%,
+      rgba(70,120,196,.85) 44% 66%,
+      rgba(90,190,110,.85) 66% 88%,
+      transparent 88%) 0 0 / 100% calc(2.5px * var(--pk)) no-repeat,
+    linear-gradient(180deg, #d7dade 0%, #9aa0a8 55%, #5d636b 100%);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55);
 }
 
 /* NOTE: "lifted" lands on .deck itself, so these are compound selectors, not
@@ -2069,7 +2215,17 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	*/
 	var CUE_ZOOM = 2.2;
 	/** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
-	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><button class=\"start\" type=\"button\">start &#183; stop</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pscale\"></div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\">Direct Drive</div></div>";
+	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><button class=\"start\" type=\"button\">start &#183; stop</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pscale\">" + [
+		"8",
+		"6",
+		"4",
+		"2",
+		"0",
+		"2",
+		"4",
+		"6",
+		"8"
+	].map((n, i) => `<span style="top:${(i * 12.5).toFixed(1)}%">${n}</span>`).join("") + "</div><div class=\"pitch\"><span class=\"pmark pminus\">&#8722;</span><span class=\"pmark pplus\">+</span><i></i></div><div class=\"pval\"></div><button class=\"reset\" type=\"button\" aria-label=\"Reset pitch\"></button><div class=\"rest\"></div><div class=\"foot\"></div><div class=\"brand\"><b>Viboplr</b><span>Direct Drive Turntable System</span></div></div>";
 	/**
 	* The S-shaped arm tube.
 	*
@@ -2300,6 +2456,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let wrotePval = "";
 		let wroteLifted = null;
 		let wroteMotorOff = null;
+		/** "No record on the platter" — see the empty branch in frame(). */
+		let wroteEmpty = null;
 		let wroteOffSpeed = null;
 		let wroteS33 = null;
 		let wroteS45 = null;
@@ -2709,7 +2867,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				deck = doc.createElement("div");
 				deck.className = `deck lifted skin-${cfg.name}` + (h.reducedMotion ? " reduce-motion" : "");
 				deck.style.setProperty("--cue-zoom", String(CUE_ZOOM));
-				deck.innerHTML = "<div class=\"stage\">" + (cfg.furniture ? PLINTH_HTML : "") + "<div class=\"platter\">" + (cfg.furniture ? "<div class=\"rim\"><i class=\"dots\"></i></div>" : "") + "<div class=\"body\"></div><div class=\"spin\"><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"cue-ring\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div>" + (cfg.furniture ? SARM_SVG : "") + "<div class=\"shadow\"></div><div class=\"head\"></div></div></div></div></div></div></div><div class=\"cue-readout\"></div>";
+				deck.innerHTML = "<div class=\"stage\">" + (cfg.furniture ? PLINTH_HTML : "") + "<div class=\"platter\">" + (cfg.furniture ? "<div class=\"rim\"><i class=\"dots\"></i></div>" : "") + "<div class=\"body\"></div><div class=\"spin\"><div class=\"slipmat\"><span>Viboplr</span><span>Viboplr</span></div><canvas></canvas><div class=\"shimmer\"></div><div class=\"label\"></div></div><div class=\"sheen\"></div><div class=\"iris\"></div><div class=\"hole\"></div><div class=\"cue-ring\"></div><div class=\"lever\"><i></i></div><div class=\"armwrap\"><div class=\"armrise\"><div class=\"arm\"><div class=\"armlift\"><div class=\"counter\"></div><div class=\"pivot\"></div><div class=\"tube\"></div>" + (cfg.furniture ? SARM_SVG : "") + "<div class=\"shadow\"></div><div class=\"head\"><i class=\"collar\"></i></div></div></div></div></div></div></div><div class=\"cue-readout\"></div>";
 				root.append(deck);
 				stage = deck.querySelector(".stage");
 				cueRing = deck.querySelector(".cue-ring");
@@ -2790,16 +2948,18 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					lastSideStart = sideStart;
 					repress(state.queue);
 				}
-				if (bands.length === 0) return;
+				const empty = bands.length === 0;
+				wroteEmpty = cssClass(deck, "empty", empty, wroteEmpty);
 				currentIndex = state.currentIndex;
-				const art = state.queue[state.currentIndex]?.artUrl ?? null;
+				const art = empty ? null : state.queue[state.currentIndex]?.artUrl ?? null;
 				if (art !== lastArt) {
 					lastArt = art;
 					label.style.backgroundImage = art ? `url("${art}")` : "";
 				}
 				if (!dragging) {
-					if (parked && restDeg !== null) wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
-					else {
+					if (empty || parked) {
+						if (restDeg !== null) wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
+					} else {
 						const rel = state.currentIndex - (side?.start ?? 0);
 						const idx = Math.max(0, Math.min(bands.length - 1, rel));
 						const r = positionToRadius(bands, idx, state.positionSecs, geo);
@@ -2826,7 +2986,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 					sndMotorOff = motorOff;
 					if (sndIndex !== null && state.currentIndex !== sndIndex) sounds.click("band");
 					sndIndex = state.currentIndex;
-					sounds.frame(spinVel, !armedNow);
+					sounds.frame(spinVel, !armedNow && !empty);
 					if (dots) {
 						const reference = spinVel > .05 ? 1 : 0;
 						dotAngle = (dotAngle + dt / 1800 * 360 * (spinVel - reference)) % 360;
