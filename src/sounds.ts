@@ -513,3 +513,82 @@ export function createDeckSounds(
     },
   };
 }
+
+/**
+ * A deck's sound engine, built only once it could actually be heard.
+ *
+ * WHY THIS EXISTS. Sounds are **off by default** (see `DEFAULT_SOUND_SETTINGS`),
+ * but the engine used to be constructed at mount regardless — and constructing it
+ * means reading the host's audio destination, which is what *opens the device*.
+ * The host builds that `AudioContext` on first read precisely so a visualizer
+ * that never makes a noise never opens one; reading it unconditionally defeated
+ * that. The cost isn't theoretical: an open context is a render thread waking
+ * every ~2.7ms, and the four continuous beds below are always-running sources
+ * whose gains are steered to zero rather than stopped — so a silent deck was
+ * still processing an audio graph on every quantum, and (since the host's bus is
+ * shared and long-lived) left the device open behind it.
+ *
+ * `resolveOut` is therefore called **lazily**, on the first settings that turn
+ * sounds on. That's not a deferral of a few frames — for a user who never enables
+ * sounds it is never called at all.
+ *
+ * The switch-on path is covered because `registerDeckSounds` pushes the current
+ * settings into every live engine: a deck mounted with sounds already on builds
+ * immediately, and one mounted with them off builds the moment the panel turns
+ * them on. Nothing else needs to know the engine was late.
+ */
+export function createLazyDeckSounds(resolveOut: () => DeckAudioOut | null): DeckSounds {
+  let real: DeckSounds | null = null;
+  let destroyed = false;
+  let settings: DeckSoundSettings = {
+    ...DEFAULT_SOUND_SETTINGS,
+    voices: { ...DEFAULT_SOUND_SETTINGS.voices },
+  };
+
+  /**
+   * The engine, or null while there is nothing to hear.
+   *
+   * Built with the settings it will start under rather than the defaults, so it
+   * never opens at one level and corrects itself a frame later.
+   */
+  function engine(): DeckSounds | null {
+    if (real || destroyed || !settings.enabled) return real;
+    real = createDeckSounds(resolveOut(), settings);
+    return real;
+  }
+
+  return {
+    setSettings(s) {
+      settings = { ...settings, ...s, voices: { ...settings.voices, ...(s.voices ?? {}) } };
+      // A build already carries the new settings; only an existing engine needs
+      // telling. Note the master switch going *off* is deliberately not a
+      // teardown — the beds ramp to silence and the graph stays, so flipping it
+      // back on is instant rather than a device open mid-listen.
+      if (real) real.setSettings(settings);
+      else engine();
+    },
+    frame(vel, needleDown) {
+      real?.frame(vel, needleDown);
+    },
+    drop() {
+      real?.drop();
+    },
+    lift() {
+      real?.lift();
+    },
+    click(kind) {
+      real?.click(kind);
+    },
+    scrape(speedPxPerSec) {
+      real?.scrape(speedPxPerSec);
+    },
+    endScrape() {
+      real?.endScrape();
+    },
+    destroy() {
+      destroyed = true;
+      real?.destroy();
+      real = null;
+    },
+  };
+}

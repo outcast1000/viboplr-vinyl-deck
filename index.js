@@ -426,6 +426,85 @@ var __viboplrPlugin = (function(exports) {
 			}
 		};
 	}
+	/**
+	* A deck's sound engine, built only once it could actually be heard.
+	*
+	* WHY THIS EXISTS. Sounds are **off by default** (see `DEFAULT_SOUND_SETTINGS`),
+	* but the engine used to be constructed at mount regardless — and constructing it
+	* means reading the host's audio destination, which is what *opens the device*.
+	* The host builds that `AudioContext` on first read precisely so a visualizer
+	* that never makes a noise never opens one; reading it unconditionally defeated
+	* that. The cost isn't theoretical: an open context is a render thread waking
+	* every ~2.7ms, and the four continuous beds below are always-running sources
+	* whose gains are steered to zero rather than stopped — so a silent deck was
+	* still processing an audio graph on every quantum, and (since the host's bus is
+	* shared and long-lived) left the device open behind it.
+	*
+	* `resolveOut` is therefore called **lazily**, on the first settings that turn
+	* sounds on. That's not a deferral of a few frames — for a user who never enables
+	* sounds it is never called at all.
+	*
+	* The switch-on path is covered because `registerDeckSounds` pushes the current
+	* settings into every live engine: a deck mounted with sounds already on builds
+	* immediately, and one mounted with them off builds the moment the panel turns
+	* them on. Nothing else needs to know the engine was late.
+	*/
+	function createLazyDeckSounds(resolveOut) {
+		let real = null;
+		let destroyed = false;
+		let settings = {
+			...DEFAULT_SOUND_SETTINGS,
+			voices: { ...DEFAULT_SOUND_SETTINGS.voices }
+		};
+		/**
+		* The engine, or null while there is nothing to hear.
+		*
+		* Built with the settings it will start under rather than the defaults, so it
+		* never opens at one level and corrects itself a frame later.
+		*/
+		function engine() {
+			if (real || destroyed || !settings.enabled) return real;
+			real = createDeckSounds(resolveOut(), settings);
+			return real;
+		}
+		return {
+			setSettings(s) {
+				settings = {
+					...settings,
+					...s,
+					voices: {
+						...settings.voices,
+						...s.voices ?? {}
+					}
+				};
+				if (real) real.setSettings(settings);
+				else engine();
+			},
+			frame(vel, needleDown) {
+				real?.frame(vel, needleDown);
+			},
+			drop() {
+				real?.drop();
+			},
+			lift() {
+				real?.lift();
+			},
+			click(kind) {
+				real?.click(kind);
+			},
+			scrape(speedPxPerSec) {
+				real?.scrape(speedPxPerSec);
+			},
+			endScrape() {
+				real?.endScrape();
+			},
+			destroy() {
+				destroyed = true;
+				real?.destroy();
+				real = null;
+			}
+		};
+	}
 	//#endregion
 	//#region src/soundSettings.ts
 	var current = {
@@ -2432,13 +2511,14 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* The last value written to each per-frame DOM property, so a frame that
 		* changes nothing costs nothing.
 		*
-		* frame() runs at display rate — 120Hz on this machine — while almost nothing
-		* it writes changes that often. Playback position advances about four times a
-		* second, the speed lamps and the transport classes go whole songs without
-		* moving, and the strobe ring is stationary at 33 by design. Measured on the
-		* SL-1200 livery over two seconds of ordinary playback: 480 setProperty, 480
-		* transform and 1200 classList.toggle calls, of which only the platter's own
-		* rotation genuinely had to happen.
+		* frame() runs as often as the host drives it — 60fps on a current host, and
+		* the display's full refresh rate (120Hz here) on one from before it capped the
+		* loop — while almost nothing it writes changes that often. Playback position
+		* advances about four times a second, the speed lamps and the transport classes
+		* go whole songs without moving, and the strobe ring is stationary at 33 by
+		* design. Measured on the SL-1200 livery over two seconds of uncapped playback:
+		* 480 setProperty, 480 transform and 1200 classList.toggle calls, of which only
+		* the platter's own rotation genuinely had to happen.
 		*
 		* Writing a style property is not free even when the value is identical: it
 		* goes through the CSSOM, dirties the element, and invites a style recalc. So
@@ -2858,7 +2938,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				host = h;
 				root = h.root;
 				size = h.size;
-				sounds = createDeckSounds(h.audio ?? null);
+				sounds = createLazyDeckSounds(() => h.audio ?? null);
 				unregisterSounds = registerDeckSounds(sounds);
 				doc = root.ownerDocument;
 				const style = doc.createElement("style");

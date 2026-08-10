@@ -24,7 +24,7 @@ import {
   positionToRadius,
   radiusToPosition,
 } from "./geometry";
-import { type DeckSounds, createDeckSounds } from "./sounds";
+import { type DeckSounds, createDeckSounds, createLazyDeckSounds } from "./sounds";
 import { registerDeckSounds } from "./soundSettings";
 import { type BandPeaks, paintVinylSurface } from "./surface";
 import { DECK_CSS } from "./style";
@@ -356,13 +356,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    * The last value written to each per-frame DOM property, so a frame that
    * changes nothing costs nothing.
    *
-   * frame() runs at display rate — 120Hz on this machine — while almost nothing
-   * it writes changes that often. Playback position advances about four times a
-   * second, the speed lamps and the transport classes go whole songs without
-   * moving, and the strobe ring is stationary at 33 by design. Measured on the
-   * SL-1200 livery over two seconds of ordinary playback: 480 setProperty, 480
-   * transform and 1200 classList.toggle calls, of which only the platter's own
-   * rotation genuinely had to happen.
+   * frame() runs as often as the host drives it — 60fps on a current host, and
+   * the display's full refresh rate (120Hz here) on one from before it capped the
+   * loop — while almost nothing it writes changes that often. Playback position
+   * advances about four times a second, the speed lamps and the transport classes
+   * go whole songs without moving, and the strobe ring is stationary at 33 by
+   * design. Measured on the SL-1200 livery over two seconds of uncapped playback:
+   * 480 setProperty, 480 transform and 1200 classList.toggle calls, of which only
+   * the platter's own rotation genuinely had to happen.
    *
    * Writing a style property is not free even when the value is identical: it
    * goes through the CSSOM, dirties the element, and invites a style recalc. So
@@ -965,11 +966,16 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       root = h.root;
       size = h.size;
 
-      // Absent on any host older than the audio capability, and on a platform
-      // with no Web Audio — in both cases this yields a fully-formed silent
-      // engine, so nothing below needs a guard. Reading `h.audio` is what opens
-      // the device, so it is read once, here, rather than per frame.
-      sounds = createDeckSounds(h.audio ?? null);
+      // LAZY, and the laziness is the point: reading `h.audio` is what opens the
+      // device, and sounds are off by default — so the read is deferred to the
+      // first settings that turn them on, and for a user who never does, never
+      // happens. `registerDeckSounds` below pushes the current settings straight
+      // in, so a deck mounted with sounds already on still builds now.
+      //
+      // A host older than the audio capability, or a platform with no Web Audio,
+      // resolves to null and yields a fully-formed silent engine — so nothing
+      // below needs a guard either way.
+      sounds = createLazyDeckSounds(() => h.audio ?? null);
       unregisterSounds = registerDeckSounds(sounds);
 
       doc = root.ownerDocument;

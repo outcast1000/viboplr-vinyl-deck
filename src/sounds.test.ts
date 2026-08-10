@@ -5,6 +5,7 @@ import {
   TONE_GAIN,
   VOICES,
   createDeckSounds,
+  createLazyDeckSounds,
   crackleRate,
   rumbleParams,
   scrapeParams,
@@ -12,6 +13,7 @@ import {
   voiceOn,
   type DeckAudioOut,
   type DeckSoundSettings,
+  type DeckSounds,
   type VoiceId,
 } from "./sounds";
 
@@ -201,6 +203,107 @@ describe("createDeckSounds without an audio context", () => {
     // becoming the path that reaches for one.
     const s = createDeckSounds(null, { enabled: true, level: 1, voices: { hiss: true } });
     expect(() => s.frame(1, true)).not.toThrow();
+  });
+});
+
+/**
+ * The lazy engine, whose entire job is NOT touching the host's audio.
+ *
+ * Reading the host's destination is what opens the device, and an open
+ * AudioContext is a render thread waking every couple of milliseconds plus four
+ * always-running beds being steered to zero. Sounds ship off, so for most users
+ * that whole apparatus was pure heat. These tests assert the resolver is never
+ * called until it has to be — the one thing that would silently regress, since a
+ * deck that opens a device it doesn't use looks and sounds exactly right.
+ */
+describe("createLazyDeckSounds", () => {
+  function lazy(): { calls: number; s: DeckSounds } {
+    const state = { calls: 0, s: null as unknown as DeckSounds };
+    state.s = createLazyDeckSounds(() => {
+      state.calls += 1;
+      const ctx = fakeCtx();
+      return { context: ctx, destination: ctx.destination } as unknown as DeckAudioOut;
+    });
+    return state;
+  }
+
+  it("opens no audio device while sounds are off", () => {
+    const l = lazy();
+    // Everything a mounted, running deck does for as long as sounds stay off.
+    l.s.setSettings({ ...DEFAULT_SOUND_SETTINGS });
+    l.s.frame(1, true);
+    l.s.frame(1, true);
+    l.s.drop();
+    l.s.lift();
+    l.s.click("transport");
+    l.s.scrape(500);
+    l.s.endScrape();
+    expect(l.calls).toBe(0);
+  });
+
+  it("builds on the settings that turn sounds on", () => {
+    const l = lazy();
+    l.s.setSettings({ enabled: false });
+    expect(l.calls).toBe(0);
+    l.s.setSettings({ enabled: true });
+    expect(l.calls).toBe(1);
+  });
+
+  it("builds once, however many times it is driven afterwards", () => {
+    const l = lazy();
+    l.s.setSettings({ enabled: true });
+    l.s.frame(1, true);
+    l.s.setSettings({ level: 0.2 });
+    l.s.setSettings({ voices: { hiss: true } });
+    expect(l.calls).toBe(1);
+  });
+
+  it("does not tear the graph down when the master switch goes off", () => {
+    // Flipping the checkbox back on must be instant. The beds ramp to silence and
+    // the graph stays; rebuilding would open a device mid-listen.
+    const l = lazy();
+    l.s.setSettings({ enabled: true });
+    l.s.setSettings({ enabled: false });
+    l.s.setSettings({ enabled: true });
+    expect(l.calls).toBe(1);
+  });
+
+  it("carries the settings it was switched on with into the engine it builds", () => {
+    // Otherwise the engine opens at the defaults and corrects itself a frame
+    // later — audible as a blip at whatever level the user actually chose.
+    const outs: ReturnType<typeof fakeCtx>[] = [];
+    const s = createLazyDeckSounds(() => {
+      const ctx = fakeCtx();
+      outs.push(ctx);
+      return { context: ctx, destination: ctx.destination } as unknown as DeckAudioOut;
+    });
+    s.setSettings({ enabled: true, level: 1, voices: { hiss: true } });
+    // The hiss bed is identifiable by its filter; it would sit at zero if the
+    // engine had started from the defaults, where hiss is off.
+    const hiss = outs[0].filters.find((f) => f.type === "highpass")?.outs[0]?.gain;
+    s.frame(1, true);
+    expect(hiss?.value).toBeGreaterThan(0);
+  });
+
+  it("stays inert after destroy rather than reaching for a device", () => {
+    const l = lazy();
+    l.s.destroy();
+    l.s.setSettings({ enabled: true });
+    l.s.frame(1, true);
+    l.s.drop();
+    expect(l.calls).toBe(0);
+  });
+
+  it("is safe unguarded when the platform has no Web Audio at all", () => {
+    // Same contract as createDeckSounds(null): the resolver may answer null, and
+    // a throw here would take the visualizer's frame loop down with it.
+    const s = createLazyDeckSounds(() => null);
+    expect(() => {
+      s.setSettings({ enabled: true, level: 1 });
+      s.frame(1, true);
+      s.drop();
+      s.destroy();
+    }).not.toThrow();
   });
 });
 

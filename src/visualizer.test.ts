@@ -1122,12 +1122,14 @@ describe("pitch fader", () => {
 });
 
 describe("a frame that changes nothing costs nothing", () => {
-  // frame() runs at display rate — 120Hz on the machine this was measured on —
-  // while almost nothing it writes changes that often: position advances about
-  // four times a second, the transport classes go whole songs without moving, and
-  // the strobe ring is stationary at 33 by design. Measured on the SL-1200 over
-  // two seconds of ordinary playback: 480 setProperty + 480 transform + 1200
-  // classList.toggle, of which only the platter's own rotation had to happen.
+  // frame() runs as often as the host drives it — 60fps on a current host, the
+  // display's full refresh rate (120Hz on the machine this was measured on) before
+  // it capped the loop — while almost nothing it writes changes that often:
+  // position advances about four times a second, the transport classes go whole
+  // songs without moving, and the strobe ring is stationary at 33 by design.
+  // Measured on the SL-1200 over two seconds of uncapped playback: 480
+  // setProperty + 480 transform + 1200 classList.toggle, of which only the
+  // platter's own rotation had to happen.
   //
   // Writing a style property is not free when the value is identical — it goes
   // through the CSSOM, dirties the element and invites a style recalc — so every
