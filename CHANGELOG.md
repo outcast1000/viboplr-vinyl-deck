@@ -1,3 +1,15 @@
+## 1.4.3
+
+- **The needle is already where it belongs when you look at the deck.** Switching to
+  Now Playing mid-song builds a fresh deck, and the arm used to start off the
+  right-hand side of the record and sweep in to the groove that was already playing
+  — arriving a fifth of a second late, cue lever dropping behind it, every single
+  time. The deck now arrives in position rather than travelling there. Same on
+  returning to the app after leaving it: the deck isn't drawn at all while it is
+  off-screen or the window is hidden, so the arm used to sweep across the record to
+  catch up with a song that had moved on without it. Cue jumps you actually make
+  still ease exactly as they did.
+
 ## 1.4.2
 
 - **The deck no longer opens an audio device to be silent with.** Sounds are off
