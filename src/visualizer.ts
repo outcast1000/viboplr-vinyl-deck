@@ -63,6 +63,19 @@ const SPINUP_TAU_MS = 220;
 const BRAKE_TAU_MS = 110;
 
 /**
+ * Longest gap between frames that counts as time merely passing, ms.
+ *
+ * Past it the deck wasn't being drawn at all: the host stops calling frame() while
+ * the visualizer is off-screen or the window is hidden, so the frame that comes
+ * back carries a position that moved on without us. Two things read this, both
+ * because such a gap is a DISCONTINUITY rather than a slow frame — the platter
+ * integrates at most this much rotation per tick (or the first frame back would
+ * spin the record through a huge angle at once), and the arm is *placed* at its
+ * groove rather than eased into it (see `placing` in frame()).
+ */
+const FRAME_GAP_MS = 250;
+
+/**
  * How far the deck magnifies while the headshell is being dragged.
  *
  * Chosen against the thing it exists to make readable. The painter lays grooves
@@ -381,6 +394,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let wrotePval = "";
   let wroteLifted: boolean | null = null;
   let wroteMotorOff: boolean | null = null;
+  let wrotePlacing: boolean | null = null;
   /** "No record on the platter" — see the empty branch in frame(). */
   let wroteEmpty: boolean | null = null;
   let wroteOffSpeed: boolean | null = null;
@@ -1254,6 +1268,33 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       wasPlaying = state.playing;
       wasStopped = state.stopped;
 
+      // THE DECK ARRIVES IN POSITION; IT DOES NOT TRAVEL THERE.
+      //
+      // Every mechanism written below is drawn through a CSS easing, because
+      // normally each write is a move somebody made: a cue jump, the lever going
+      // up, the arm sweeping back to its rest. The first frame after a mount is
+      // not a move — it is the deck learning where the needle already is. And
+      // switching to the Now Playing view mid-song mounts a fresh deck, so that
+      // was every time: the arm swept in from the CSS default and arrived a fifth
+      // of a second late at a groove that had been playing all along. A frame that
+      // lands after a gap is the same discontinuity from the other end (see
+      // FRAME_GAP_MS). Both are answered by suppressing the easings for exactly
+      // that frame, so the writes land as a placement — `.placing` in style.ts.
+      //
+      // WHY THIS WORKS WITHOUT A FORCED REFLOW, and why it can sit here rather
+      // than ahead of the first write it governs: a transition is started from the
+      // AFTER-change style, and the whole of frame() is one task, so the browser
+      // computes style once after it returns. A `transition: none` landing
+      // anywhere in the same frame as the new value stops the transition before it
+      // begins. The class must NOT be dropped in that same frame, though — that
+      // would restore the easing in the pass that also carries the jump.
+      //
+      // Same rule the needle-drop sound already follows (`sndArmUp !== null`
+      // below): mounting a deck that is already playing must not look, or sound,
+      // like someone just dropped the needle on it.
+      const placing = lastMs === null || state.timeMs - lastMs > FRAME_GAP_MS;
+      wrotePlacing = cssClass(deck, "placing", placing, wrotePlacing);
+
       // THE ARM IS UP IF SOMETHING RAISED IT — the lever, or a stop that sent it
       // home. A stopped MOTOR does not: the needle stays in the groove of a record
       // that isn't turning, which is the picture that tells the two apart.
@@ -1345,10 +1386,12 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // reach a JS-driven rotation, so honour the flag here.
       if (!host.reducedMotion) {
         // Integrate rather than derive from timeMs, so a speed change
-        // accelerates the platter instead of teleporting it. dt is clamped
-        // because the host stops calling frame() off-screen, and the first tick
-        // back would otherwise spin the record through a huge angle at once.
-        const dt = lastMs === null ? 0 : Math.max(0, Math.min(250, state.timeMs - lastMs));
+        // accelerates the platter instead of teleporting it. dt is clamped at the
+        // gap that means the deck wasn't being drawn (FRAME_GAP_MS), or the first
+        // tick back would spin the record through a huge angle at once — the same
+        // discontinuity `placing` above answers for the arm.
+        const dt =
+          lastMs === null ? 0 : Math.max(0, Math.min(FRAME_GAP_MS, state.timeMs - lastMs));
 
         // Ease toward the target speed rather than jumping to it: a direct-drive
         // platter reaches speed in well under a turn and brakes harder still,

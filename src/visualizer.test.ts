@@ -273,6 +273,64 @@ describe("vinyl deck visualizer", () => {
     expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeGreaterThan(start);
   });
 
+  it("places the arm at the playing groove on mount instead of easing it in", () => {
+    // Switching to the Now Playing view mid-song mounts a fresh deck, and `--deg`
+    // is unset until the first frame — so without this the arm sat off the record
+    // and swept in to a groove that had been playing all along.
+    // The rules are asserted against the stylesheet text rather than the DOM,
+    // because jsdom applies no styles — the class alone says nothing about whether
+    // an easing was really suppressed (same reason as the slipmat rule below).
+    // Every part of the assembly that eases on a transport change is covered.
+    for (const sel of [".arm", ".armlift", ".tube", ".shadow", ".lever i"]) {
+      expect(DECK_CSS).toContain(`.placing ${sel}`);
+    }
+    expect(DECK_CSS).toMatch(/\.placing \.arm[^{]*\{[^}]*transition:\s*none/);
+    // And LAST: each rule it has to beat carries the same specificity, so being
+    // later in the sheet is the whole of why it wins.
+    for (const rival of [".motor-off .arm", ".lifted .armlift", ".lifted .lever i", ".lifted .shadow"]) {
+      expect(DECK_CSS.indexOf(".placing .arm")).toBeGreaterThan(DECK_CSS.lastIndexOf(rival));
+    }
+
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(host);
+    const deck = root.querySelector(".deck") as HTMLElement;
+    const arm = root.querySelector(".arm") as HTMLElement;
+
+    v.frame(makeState({ currentIndex: 3, positionSecs: 40, timeMs: 0 }));
+    // The class has to be on for the frame that WRITES the angle: a transition is
+    // started from the after-change style, so both must land in the same pass.
+    expect(deck.classList.contains("placing")).toBe(true);
+    // And it must be the real groove, not a rest position that tracking corrects.
+    const mount = buildArmMount(geo);
+    const want = armAngleDeg(positionToRadius(bands, 3, 40, geo), geo, mount);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+
+    // Off again as soon as the deck is merely tracking, or a cue jump would snap
+    // for the rest of the deck's life.
+    v.frame(makeState({ currentIndex: 3, positionSecs: 40.02, timeMs: 16 }));
+    expect(deck.classList.contains("placing")).toBe(false);
+  });
+
+  it("places rather than sweeps on the frame that resumes after a gap", () => {
+    // The host stops calling frame() while the deck is off-screen or the window is
+    // hidden, so the frame that brings it back carries a position that moved on
+    // without it. Same discontinuity as a mount, and not a move anybody made.
+    const { host, root } = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(host);
+    const deck = root.querySelector(".deck") as HTMLElement;
+
+    v.frame(makeState({ positionSecs: 0, timeMs: 0 }));
+    v.frame(makeState({ positionSecs: 0.016, timeMs: 16 }));
+    expect(deck.classList.contains("placing")).toBe(false);
+
+    v.frame(makeState({ currentIndex: 4, positionSecs: 90, timeMs: 60_016 }));
+    expect(deck.classList.contains("placing")).toBe(true);
+    v.frame(makeState({ currentIndex: 4, positionSecs: 90.016, timeMs: 60_032 }));
+    expect(deck.classList.contains("placing")).toBe(false);
+  });
+
   it("lifts the arm when paused and keeps the platter turning", () => {
     const { host, root } = makeHost();
     const v = createVinylDeckVisualizer();

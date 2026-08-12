@@ -1358,6 +1358,26 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 }
 .lifted .shadow { opacity: 1; }
 
+/* PLACEMENT, NOT MOVEMENT.
+   Set for a frame that is telling the mechanisms where they ALREADY are rather
+   than moving them: the first frame after a mount, and the frame that resumes
+   after the host stopped calling frame() (off-screen, or the window hidden — see
+   FRAME_GAP_MS in visualizer.ts). Every easing above would otherwise play that
+   out as a gesture. Switching to the Now Playing view mid-song remounts the whole
+   visualizer, so it played out EVERY time: --deg is unset until the first frame,
+   which makes rotate(var(--deg)) invalid at computed-value time and leaves the
+   arm at rotate(0) off the right-hand side of the record — from where it swept in
+   to the groove that was already playing, plus the lever dropping and the contact
+   shadow closing up behind it. A deck you switch to is a deck already playing.
+   Listed one by one rather than as ".placing *", whose specificity would lose to
+   the .lifted rules — and these must stay AFTER those, since at equal specificity
+   order is what settles it. */
+.placing .arm,
+.placing .armlift,
+.placing .tube,
+.placing .shadow,
+.placing .lever i { transition: none; }
+
 /* ===================================================================
    SL-1200 livery
    ===================================================================
@@ -2279,6 +2299,18 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	var SPINUP_TAU_MS = 220;
 	var BRAKE_TAU_MS = 110;
 	/**
+	* Longest gap between frames that counts as time merely passing, ms.
+	*
+	* Past it the deck wasn't being drawn at all: the host stops calling frame() while
+	* the visualizer is off-screen or the window is hidden, so the frame that comes
+	* back carries a position that moved on without us. Two things read this, both
+	* because such a gap is a DISCONTINUITY rather than a slow frame — the platter
+	* integrates at most this much rotation per tick (or the first frame back would
+	* spin the record through a huge angle at once), and the arm is *placed* at its
+	* groove rather than eased into it (see `placing` in frame()).
+	*/
+	var FRAME_GAP_MS = 250;
+	/**
 	* How far the deck magnifies while the headshell is being dragged.
 	*
 	* Chosen against the thing it exists to make readable. The painter lays grooves
@@ -2536,6 +2568,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let wrotePval = "";
 		let wroteLifted = null;
 		let wroteMotorOff = null;
+		let wrotePlacing = null;
 		/** "No record on the platter" — see the empty branch in frame(). */
 		let wroteEmpty = null;
 		let wroteOffSpeed = null;
@@ -3017,6 +3050,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				} else if (!state.playing && !motorOff && !parked && !pendingPlay) armUp = true;
 				wasPlaying = state.playing;
 				wasStopped = state.stopped;
+				const placing = lastMs === null || state.timeMs - lastMs > FRAME_GAP_MS;
+				wrotePlacing = cssClass(deck, "placing", placing, wrotePlacing);
 				wroteLifted = cssClass(deck, "lifted", armUp || parked, wroteLifted);
 				wroteMotorOff = cssClass(deck, "motor-off", motorOff, wroteMotorOff);
 				rate = typeof state.rate === "number" && state.rate > 0 ? state.rate : 1;
@@ -3052,7 +3087,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				if (!scrubbingPitch) showPitch(pitchState.percent);
 				wroteOffSpeed = cssClass(deck, "off-speed", Math.abs(pitchState.percent) > .05, wroteOffSpeed);
 				if (!host.reducedMotion) {
-					const dt = lastMs === null ? 0 : Math.max(0, Math.min(250, state.timeMs - lastMs));
+					const dt = lastMs === null ? 0 : Math.max(0, Math.min(FRAME_GAP_MS, state.timeMs - lastMs));
 					const target = motorOff ? 0 : rate;
 					const tau = target === 0 ? BRAKE_TAU_MS : SPINUP_TAU_MS;
 					spinVel += (target - spinVel) * (1 - Math.exp(-dt / tau));

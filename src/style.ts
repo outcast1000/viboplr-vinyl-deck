@@ -452,6 +452,26 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 }
 .lifted .shadow { opacity: 1; }
 
+/* PLACEMENT, NOT MOVEMENT.
+   Set for a frame that is telling the mechanisms where they ALREADY are rather
+   than moving them: the first frame after a mount, and the frame that resumes
+   after the host stopped calling frame() (off-screen, or the window hidden — see
+   FRAME_GAP_MS in visualizer.ts). Every easing above would otherwise play that
+   out as a gesture. Switching to the Now Playing view mid-song remounts the whole
+   visualizer, so it played out EVERY time: --deg is unset until the first frame,
+   which makes rotate(var(--deg)) invalid at computed-value time and leaves the
+   arm at rotate(0) off the right-hand side of the record — from where it swept in
+   to the groove that was already playing, plus the lever dropping and the contact
+   shadow closing up behind it. A deck you switch to is a deck already playing.
+   Listed one by one rather than as ".placing *", whose specificity would lose to
+   the .lifted rules — and these must stay AFTER those, since at equal specificity
+   order is what settles it. */
+.placing .arm,
+.placing .armlift,
+.placing .tube,
+.placing .shadow,
+.placing .lever i { transition: none; }
+
 /* ===================================================================
    SL-1200 livery
    ===================================================================
