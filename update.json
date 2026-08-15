@@ -1,6 +1,6 @@
 {
-  "version": "1.4.3",
+  "version": "1.4.4",
   "file": "https://github.com/outcast1000/viboplr-vinyl-deck/releases/latest/download/vinyl-deck.zip",
   "minAppVersion": "1.0.16",
-  "changelog": "- **The needle is already where it belongs when you look at the deck.** Switching to\n  Now Playing mid-song builds a fresh deck, and the arm used to start off the\n  right-hand side of the record and sweep in to the groove that was already playing\n  — arriving a fifth of a second late, cue lever dropping behind it, every single\n  time. The deck now arrives in position rather than travelling there. Same on\n  returning to the app after leaving it: the deck isn't drawn at all while it is\n  off-screen or the window is hidden, so the arm used to sweep across the record to\n  catch up with a song that had moved on without it. Cue jumps you actually make\n  still ease exactly as they did."
+  "changelog": "- **The deck is no longer experimental.** It carried the Experimental badge from\n  its first release, while the platter geometry, the cueing and the two decks\n  were still moving under it. They have settled: the badge is gone, the deck\n  leaves the gallery's Experimental section for the main list, and it is offered\n  like any other plugin. Nothing about the deck itself changed in this release."
 }

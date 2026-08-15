@@ -1,3 +1,11 @@
+## 1.4.4
+
+- **The deck is no longer experimental.** It carried the Experimental badge from
+  its first release, while the platter geometry, the cueing and the two decks
+  were still moving under it. They have settled: the badge is gone, the deck
+  leaves the gallery's Experimental section for the main list, and it is offered
+  like any other plugin. Nothing about the deck itself changed in this release.
+
 ## 1.4.3
 
 - **The needle is already where it belongs when you look at the deck.** Switching to
