@@ -76,6 +76,27 @@ const BRAKE_TAU_MS = 110;
 const FRAME_GAP_MS = 250;
 
 /**
+ * How long a committed cue may keep the arm waiting for the host's echo, ms,
+ * and how close the echoed position must come to count as that cue landing.
+ *
+ * On release the deck tells the host where the needle went, but frame() keeps
+ * receiving the OLD position until the seek or load round-trips — and the
+ * host refreshes position only a few times a second. Unsuppressed, the very
+ * next frame re-derived the arm from that stale state, so the arm swept back
+ * to where the music HAD been and then returned once the host caught up: a
+ * wobble on every cue, after a drag that ended exactly on target. The same
+ * lag `dragging` covers, continued past the release — see `cueHold`.
+ *
+ * The hold ends the moment the host reports the cued track within the epsilon
+ * of the cued position (coarse enough for those sparse updates, and any error
+ * it hides is well under a pixel of band), or at the timeout — a host that
+ * never complies gets the arm back, because a hold that could latch would pin
+ * the needle to a groove nothing is playing.
+ */
+export const CUE_HOLD_TIMEOUT_MS = 3000;
+const CUE_HOLD_EPSILON_SECS = 2;
+
+/**
  * How far the deck magnifies while the headshell is being dragged.
  *
  * Chosen against the thing it exists to make readable. The painter lays grooves
@@ -343,6 +364,20 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    * head back under the user's cursor — which read as the arm not moving at all.
    */
   let dragging = false;
+
+  /**
+   * A cue committed on release that the host has not echoed back yet.
+   *
+   * While set, frame() leaves the arm where the hand put it — the same
+   * suppression `dragging` provides, extended past the release until the state
+   * being rendered is the state the cue asked for (see CUE_HOLD_TIMEOUT_MS).
+   * `index` is ABSOLUTE, like the host's, because it is compared against
+   * `state.currentIndex`. `secs` is what the host was actually asked for, and
+   * null on the play-from-zero fallback — that path genuinely loses the
+   * position, so once the host is on the cued track, whatever position it
+   * reports IS the truth and waiting for a particular one would hold forever.
+   */
+  let cueHold: { index: number; secs: number | null; untilMs: number } | null = null;
 
   /** The plugin sandbox passes `document: undefined` and a frozen `window`, so
    *  ambient DOM is unavailable by design. Everything comes through the one
@@ -624,6 +659,18 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   }
 
   /**
+   * The arm stays where the hand left it until the host echoes this cue.
+   *
+   * Called at the moment a cue is committed, so `lastMs` — the last frame the
+   * host drew — is the natural zero for the timeout: a deck that stops being
+   * drawn right after a cue times the hold out on the first frame back, and
+   * arrives placed (see FRAME_GAP_MS) instead of holding a stale gesture.
+   */
+  function holdCue(index: number, secs: number | null) {
+    cueHold = { index, secs, untilMs: (lastMs ?? 0) + CUE_HOLD_TIMEOUT_MS };
+  }
+
+  /**
    * mm:ss. Minutes only — a side is 22 minutes, so there is no hour case.
    *
    * ROUNDS rather than floors, unlike an elapsed-time display. This is a target,
@@ -815,7 +862,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // exactly its duration, and seeking THERE ends the track instead of playing
       // it. See CUE_END_MARGIN_SECS.
       if (queueIndex === currentIndex) {
-        host.actions.seek(cueTarget(last));
+        const target = cueTarget(last);
+        host.actions.seek(target);
+        holdCue(queueIndex, target);
         return;
       }
 
@@ -839,6 +888,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         // Cue first, ask for the transport second: the two are separate questions
         // and only this order can answer both.
         load.call(host.actions, queueIndex, cueTarget(last));
+        holdCue(queueIndex, cueTarget(last));
         // NOT `syncTransport()` here, one frame later — see `resumingCue`. The
         // host's setPlaying bridge compares against its own live `playing`, which
         // still reads as playing this tick, so a request sent now is dropped as a
@@ -853,6 +903,11 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       }
 
       host.actions.playQueueIndex(queueIndex);
+      // A null-position hold: this path restarts the track from 0:00, so the
+      // echo to wait for is the cued INDEX with whatever position comes with it
+      // — holding out for the groove the readout promised would wait on a
+      // position this host was never asked for, and could not deliver.
+      holdCue(queueIndex, null);
       // Fallback for a host too old to load without playing. `playQueueIndex` is
       // then the only way to change track and it always starts — so a running
       // deck loses the cue position (there is nowhere to put it), and a stopped
@@ -1324,6 +1379,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       if (state.queueRevision !== lastRevision || sideStart !== lastSideStart) {
         lastRevision = state.queueRevision;
         lastSideStart = sideStart;
+        // A new pressing under a cue still in flight: the groove that cue named
+        // was on the old one, so there is nothing left to wait for.
+        cueHold = null;
         repress(state.queue);
       }
       // NO RECORD ON THE PLATTER. Not a bail — that is what this used to be, and
@@ -1356,17 +1414,33 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
         // the arm where it was rather than pointing it at a pressing that isn't
         // there — the alternative would index an empty band table.
         if (empty || parked) {
+          // Neither state leaves a cue anything to wait for: an empty deck has
+          // no pressing, and a stop has already sent the arm home over it.
+          cueHold = null;
           if (restDeg !== null) {
             wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
           }
         } else {
-          // Side-relative, and clamped: while the playing track is on ANOTHER side
-          // this pins the arm at that end of the pressing rather than pointing at a
-          // band that isn't here.
-          const rel = state.currentIndex - (side?.start ?? 0);
-          const idx = Math.max(0, Math.min(bands.length - 1, rel));
-          const r = positionToRadius(bands, idx, state.positionSecs, geo);
-          wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
+          // A committed cue keeps owning the arm until the host echoes it back.
+          // The frames in between still carry the OLD position — tracking them
+          // swept the arm away from the drop and back again on every cue. See
+          // CUE_HOLD_TIMEOUT_MS for both ways the hold ends.
+          if (cueHold) {
+            const landed =
+              state.currentIndex === cueHold.index &&
+              (cueHold.secs === null ||
+                Math.abs(state.positionSecs - cueHold.secs) <= CUE_HOLD_EPSILON_SECS);
+            if (landed || state.timeMs >= cueHold.untilMs) cueHold = null;
+          }
+          if (!cueHold) {
+            // Side-relative, and clamped: while the playing track is on ANOTHER side
+            // this pins the arm at that end of the pressing rather than pointing at a
+            // band that isn't here.
+            const rel = state.currentIndex - (side?.start ?? 0);
+            const idx = Math.max(0, Math.min(bands.length - 1, rel));
+            const r = positionToRadius(bands, idx, state.positionSecs, geo);
+            wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
+          }
         }
       }
 

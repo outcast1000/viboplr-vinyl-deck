@@ -12,7 +12,7 @@ import type {
   PluginVisualizerState,
   PluginVisualizerTrack,
 } from "../types/viboplr-visualizer";
-import { createVinylDeckVisualizer, RATE_45 } from "./visualizer";
+import { CUE_HOLD_TIMEOUT_MS, createVinylDeckVisualizer, RATE_45 } from "./visualizer";
 import { armAngleDeg, buildArmMount, buildGeometry, layoutBands, positionToRadius } from "./geometry";
 import { SKINS, type DeckSkin } from "./skins";
 import { DECK_CSS } from "./style";
@@ -576,9 +576,16 @@ describe("vinyl deck visualizer", () => {
     expect(arm.style.getPropertyValue("--deg")).toBe(during);
 
     head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
-    // Released: the host owns the angle again.
+    // Released — but the host has not echoed the cue yet, and these frames still
+    // carry the old groove. The arm must not track them (see "the cue hold"
+    // below), or every cue would sweep away and back.
     v.frame(makeState({ currentIndex: 0, positionSecs: 0 }));
-    expect(arm.style.getPropertyValue("--deg")).toBe(before);
+    expect(arm.style.getPropertyValue("--deg")).toBe(during);
+    // The cue lands: the host owns the angle again.
+    const landedIdx = DURATIONS.length - 1;
+    v.frame(makeState({ currentIndex: landedIdx, positionSecs: 30 }));
+    const want = armAngleDeg(positionToRadius(bands, landedIdx, 30, geo), geo, buildArmMount(geo));
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
   });
 
   it("survives an empty queue and unknown durations", () => {
@@ -1689,6 +1696,80 @@ describe("the cue magnifier", () => {
     v.frame(makeState({ timeMs: 64, playing: true, currentIndex: 4, positionSecs: 100 }));
     expect(deck.classList.contains("lifted")).toBe(false);
     expect(deck.classList.contains("motor-off")).toBe(false);
+  });
+
+  it("holds the arm on the drop until the host echoes the cue", () => {
+    // The reported symptom: drop the needle, and the arm swept off somewhere
+    // else before coming back to roughly where it was left. The "somewhere
+    // else" was the OLD groove — after release, frame() re-derived the angle
+    // from a state the seek had not reached yet, and the host refreshes
+    // position only a few times a second, so the stale window was long enough
+    // to watch. The cue hold keeps the arm where the hand put it until the
+    // state being rendered is the state the cue asked for.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const arm = h.root.querySelector(".arm") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    const dropped = arm.style.getPropertyValue("--deg");
+
+    // The host has not echoed yet: these frames still carry track 1 at 0:30,
+    // and the arm must not track them.
+    v.frame(makeState({ timeMs: 16, playing: true, currentIndex: 0, positionSecs: 30 }));
+    v.frame(makeState({ timeMs: 200, playing: true, currentIndex: 0, positionSecs: 30 }));
+    expect(arm.style.getPropertyValue("--deg")).toBe(dropped);
+
+    // The load lands — cued track, cued groove — and the host owns the arm
+    // again, on the groove the drop promised.
+    v.frame(makeState({ timeMs: 216, playing: false, currentIndex: 4, positionSecs: 100 }));
+    const want = armAngleDeg(positionToRadius(bandsSL, 4, 100, geoSL), geoSL, mountSL);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+  });
+
+  it("holds a seek inside the playing band the same way", () => {
+    // The same stale window exists with no track change at all: a seek is
+    // echoed through the same sparse position updates a load is.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const arm = h.root.querySelector(".arm") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 4, positionSecs: 30 }));
+
+    cue(h.root, 4, 300, geoSL, bandsSL);
+    expect(h.seek).toHaveBeenCalledTimes(1);
+    const dropped = arm.style.getPropertyValue("--deg");
+
+    // Still reporting the pre-seek position: held.
+    v.frame(makeState({ timeMs: 16, playing: true, currentIndex: 4, positionSecs: 30 }));
+    expect(arm.style.getPropertyValue("--deg")).toBe(dropped);
+
+    // The seek lands, and tracking resumes from there.
+    v.frame(makeState({ timeMs: 32, playing: true, currentIndex: 4, positionSecs: 300 }));
+    v.frame(makeState({ timeMs: 48, playing: true, currentIndex: 4, positionSecs: 306 }));
+    const want = armAngleDeg(positionToRadius(bandsSL, 4, 306, geoSL), geoSL, mountSL);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+  });
+
+  it("gives the arm back to the host when a cue is never echoed", () => {
+    // A hold that could latch would pin the needle to a groove nothing is
+    // playing — a host that drops the seek must get the arm back.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const arm = h.root.querySelector(".arm") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+
+    // The host never complies. Once the timeout passes, the arm tracks what is
+    // actually playing rather than the cue that never happened.
+    for (let t = 100; t <= CUE_HOLD_TIMEOUT_MS + 200; t += 100) {
+      v.frame(makeState({ timeMs: t, playing: true, currentIndex: 0, positionSecs: 30 }));
+    }
+    const want = armAngleDeg(positionToRadius(bandsSL, 0, 30, geoSL), geoSL, mountSL);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
   });
 
   it("keeps the old play-from-zero path when the host cannot start it again", () => {
