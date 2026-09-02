@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "viboplr-vinyl-deck",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "description": "Vinyl Deck visualizer for Viboplr \u2014 presses the play queue onto a single-sided record.",
   "type": "module",
   "scripts": {

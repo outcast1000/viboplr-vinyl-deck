@@ -1,6 +1,6 @@
 {
-  "version": "1.4.4",
+  "version": "1.4.5",
   "file": "https://github.com/outcast1000/viboplr-vinyl-deck/releases/latest/download/vinyl-deck.zip",
   "minAppVersion": "1.0.16",
-  "changelog": "- **The deck is no longer experimental.** It carried the Experimental badge from\n  its first release, while the platter geometry, the cueing and the two decks\n  were still moving under it. They have settled: the badge is gone, the deck\n  leaves the gallery's Experimental section for the main list, and it is offered\n  like any other plugin. Nothing about the deck itself changed in this release."
+  "changelog": "- **The needle stays where you drop it.** Cueing committed the seek and then let\n  the very next frame re-derive the arm from the app's reported position — which\n  still carried the old groove until the seek round-tripped, and refreshes only a\n  few times a second. So the arm swept back toward where the music *had* been,\n  then returned once the app caught up: a wobble on every cue, after a drag that\n  had ended exactly on target. The arm now stays where the hand put it until the\n  app reports the cued track at the cued position. A few seconds with no answer\n  hands the arm back — a hold that could latch would pin the needle to a groove\n  nothing is playing — and a stop, an emptied queue or a changed pressing clears\n  it outright."
 }

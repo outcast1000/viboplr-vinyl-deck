@@ -1,3 +1,16 @@
+## 1.4.5
+
+- **The needle stays where you drop it.** Cueing committed the seek and then let
+  the very next frame re-derive the arm from the app's reported position — which
+  still carried the old groove until the seek round-tripped, and refreshes only a
+  few times a second. So the arm swept back toward where the music *had* been,
+  then returned once the app caught up: a wobble on every cue, after a drag that
+  had ended exactly on target. The arm now stays where the hand put it until the
+  app reports the cued track at the cued position. A few seconds with no answer
+  hands the arm back — a hold that could latch would pin the needle to a groove
+  nothing is playing — and a stop, an emptied queue or a changed pressing clears
+  it outright.
+
 ## 1.4.4
 
 - **The deck is no longer experimental.** It carried the Experimental badge from
