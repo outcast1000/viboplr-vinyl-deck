@@ -1,3 +1,30 @@
+## 1.5.0
+
+- **Hover the record to magnify it.** The lens used to exist only for the length
+  of a headshell drag, so reading the record — a band is a few pixels of groove
+  at rest — meant picking the arm up. It now rises whenever the cursor is over
+  the record, and it magnifies one fixed area: the reading zone, mid-program on
+  the arm's side, the same spot every time. It deliberately does not follow the
+  mouse (a lens riding the cursor pans the whole deck opposite the hand, so
+  crossing the record means chasing the picture), and it keeps to the disc — the
+  plinth's controls stay full size under the pointer. Dragging the headshell
+  still magnifies exactly as before, and dropping the needle with the cursor
+  still on the record keeps the lens up instead of blinking it out and back in.
+
+- **The last of the cue wobble, on remote tracks.** 1.4.5 held the arm where you
+  dropped it until the app echoed the cue back — but the app echoes a cue's
+  numbers immediately, before a remote stream has fetched a byte, and only then
+  starts reporting from the engine's clock, which begins at 0 until enough has
+  buffered. The hold believed the first echo, let go, and the arm swung out and
+  back anyway — sized by exactly the network delay that made the track remote,
+  so no timeout could cover it. The app now tells the deck it is still loading
+  (from the release that carries it), the hold ignores every echo until that
+  clears, and its timeout counts only idle time — with a 30-second ceiling so a
+  host stuck resolving still gets the arm back. On app versions without the
+  signal the deck behaves as before, which is all a local file needs. And when a
+  hold does give up, the arm now settles over half a second instead of
+  twitching — a correction the hand didn't make shouldn't read like a fault.
+
 ## 1.4.5
 
 - **The needle stays where you drop it.** Cueing committed the seek and then let
