@@ -1277,14 +1277,120 @@ describe("the cue magnifier", () => {
     return head;
   }
 
-  it("zooms only while the headshell is held", () => {
+  /** A bare hover, no buttons pressed. Bubbles like a real move over the disc. */
+  function hover(el: HTMLElement, x: number, y: number) {
+    el.dispatchEvent(new MouseEvent("pointermove",
+      { bubbles: true, clientX: x, clientY: y }) as unknown as PointerEvent);
+  }
+
+  it("rises over the record onto the reading zone, and stays put", () => {
+    // Inspection, not only aiming: the bands are a few pixels of groove at rest,
+    // so reading the record should not require picking the arm up. But the lens
+    // magnifies ONE fixed area — mid-program, on the arm's side — not wherever
+    // the mouse is: an anchor riding the cursor panned the whole deck opposite
+    // the hand at 1.2x, so crossing the record meant chasing the picture.
     const { root, deck } = mounted();
+    const stage = root.querySelector(".stage") as HTMLElement;
     expect(deck.classList.contains("zoomed")).toBe(false);
 
-    const head = grab(root, 3, 20);
+    hover(deck, geo.cx - geo.rLeadIn, geo.cy);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+    // The studio deck fills the slot with no offset, so the reading zone is the
+    // slot's centre pushed right to the middle of the program area.
+    const [ox, oy] = stage.style.transformOrigin.split(" ").map(parseFloat);
+    expect(ox).toBeCloseTo(SIZE / 2 + (geo.rLeadIn + geo.rProgIn) / 2, 0);
+    expect(oy).toBeCloseTo(SIZE / 2, 0);
+
+    // Sweeping the cursor across the record moves nothing.
+    const entered = stage.style.transformOrigin;
+    hover(deck, geo.cx + geo.rProgIn, geo.cy);
+    hover(deck, geo.cx, geo.cy - geo.rLeadIn);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+    expect(stage.style.transformOrigin).toBe(entered);
+  });
+
+  it("does not re-anchor a raised lens when the headshell is grabbed", () => {
+    // The anchor is chosen when the lens rises and never moves while it is up.
+    // A grab under a raised lens changes no scale, so re-anchoring it could only
+    // jump the whole picture under the hand at 2.2x — the press-point anchor is
+    // for the drag that raises the lens itself, where a scale IS arriving.
+    const { root, deck } = mounted();
+    const stage = root.querySelector(".stage") as HTMLElement;
+    hover(deck, geo.cx - geo.rLeadIn, geo.cy);
+    const anchored = stage.style.transformOrigin;
+
+    const head = root.querySelector(".head") as HTMLElement;
+    const press = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - geo.rLeadIn, clientY: geo.cy };
+    head.dispatchEvent(new MouseEvent("pointerdown", press) as unknown as PointerEvent);
+    expect(stage.style.transformOrigin).toBe(anchored);
+  });
+
+  it("stays down over the furniture, so the controls keep their size", () => {
+    // The plinth carries real controls — START/STOP, the speed buttons, the
+    // pitch fader — and a magnifier that scales the button being aimed at turns
+    // it into a moving target. Only the disc has detail to reveal.
+    const { deck } = mounted("sl1200");
+    hover(deck, geoSL.cx + geoSL.rEdge + 10, geoSL.cy);
+    expect(deck.classList.contains("zoomed")).toBe(false);
+
+    // And crossing from the record onto the plinth lowers a lens already up.
+    hover(deck, geoSL.cx - geoSL.rLeadIn, geoSL.cy);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+    hover(deck, geoSL.cx + geoSL.rEdge + 10, geoSL.cy);
+    expect(deck.classList.contains("zoomed")).toBe(false);
+  });
+
+  it("leaves with the cursor", () => {
+    const { deck } = mounted();
+    hover(deck, geo.cx, geo.cy - geo.rLeadIn);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+    deck.dispatchEvent(new MouseEvent("pointerleave") as unknown as PointerEvent);
+    expect(deck.classList.contains("zoomed")).toBe(false);
+  });
+
+  it("does not rise over an empty deck, and drops when the pressing empties", () => {
+    // No record, nothing to magnify — a slipmat at 2.2x reads as broken. And a
+    // queue emptied UNDER the lens takes the lens with it rather than holding
+    // that slipmat magnified until the next pointer move.
+    const h = makeHost();
+    const v = createVinylDeckVisualizer();
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+
+    v.frame(makeState({ queue: [], currentIndex: -1, queueRevision: 2 }));
+    hover(deck, geo.cx, geo.cy);
+    expect(deck.classList.contains("zoomed")).toBe(false);
+
+    v.frame(makeState({ currentIndex: 0, queueRevision: 3 }));
+    hover(deck, geo.cx - geo.rLeadIn, geo.cy);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+    v.frame(makeState({ queue: [], currentIndex: -1, queueRevision: 4 }));
+    expect(deck.classList.contains("zoomed")).toBe(false);
+  });
+
+  it("zooms for a drag begun beyond the record, and hands the lens back on release", () => {
+    // The headshell overhangs the rim and a lifted arm is offset besides, so a
+    // real grab often starts OUTSIDE the record where hover raises nothing — the
+    // drag's own first move must still bring the lens up. And a drop with the
+    // cursor still on the record stays magnified: the gesture ends, the
+    // inspection doesn't.
+    const { root, deck } = mounted();
+    const head = root.querySelector(".head") as HTMLElement;
+    const at = (x: number, y: number) =>
+      ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: y });
+
+    // The deck corner: well past rEdge, so no hover lens.
+    head.dispatchEvent(new MouseEvent("pointerdown", at(1, 1)) as unknown as PointerEvent);
+    expect(deck.classList.contains("zoomed")).toBe(false); // a press alone resolves nothing
+
+    const r = positionToRadius(bands, 3, 20, geo);
+    head.dispatchEvent(new MouseEvent("pointermove", at(geo.cx - r, geo.cy)) as unknown as PointerEvent);
     expect(deck.classList.contains("zoomed")).toBe(true);
 
-    head.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }) as unknown as PointerEvent);
+    head.dispatchEvent(new MouseEvent("pointerup", at(geo.cx - r, geo.cy)) as unknown as PointerEvent);
+    expect(deck.classList.contains("zoomed")).toBe(true);
+
+    deck.dispatchEvent(new MouseEvent("pointerleave") as unknown as PointerEvent);
     expect(deck.classList.contains("zoomed")).toBe(false);
   });
 

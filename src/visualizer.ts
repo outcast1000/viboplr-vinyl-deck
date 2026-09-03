@@ -142,7 +142,10 @@ const CUE_HOLD_EPSILON_SECS = 2;
 export const ARM_SETTLE_MS = 500;
 
 /**
- * How far the deck magnifies while the headshell is being dragged.
+ * How far the deck magnifies under the lens — up whenever the cursor is over
+ * the record (aimed at the fixed reading zone, see lensAnchor) and held through
+ * a headshell drag (a drag that raises it itself anchors on the press point,
+ * see anchorMagnifier).
  *
  * Chosen against the thing it exists to make readable. The painter lays grooves
  * at a 1.15px pitch, so at 1x a band on a full twelve-track side is a handful of
@@ -150,8 +153,8 @@ export const ARM_SETTLE_MS = 500;
  * or so with visibly varying brightness, which is the difference between aiming
  * at a track and aiming at a smudge.
  *
- * Not higher, because the loupe is anchored where you grabbed and the rest of the
- * record has to stay recognisable around it — past roughly this the band you are
+ * Not higher, because the loupe holds one anchor for its whole stay and the
+ * rest of the record has to stay recognisable around it — past roughly this the band you are
  * leaving and the one you are heading for are both off-screen, and a cue you
  * cannot aim in context is no easier than one you cannot see.
  */
@@ -411,6 +414,26 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let dragging = false;
 
   /**
+   * The magnifier is up. One flag for its two triggers — hovering the record,
+   * and dragging the headshell — because they hand the lens to each other
+   * mid-gesture and each used to assume it owned the teardown.
+   */
+  let lensOn = false;
+
+  /**
+   * Where a hover-raised lens looks: the READING ZONE, in stage coordinates.
+   *
+   * A fixed point — the middle of the program area on the arm's side — rather
+   * than the cursor. Following the cursor made the whole deck pan under a hand
+   * that was just crossing it, so inspecting the record meant chasing a picture
+   * that moved opposite the mouse at 1.2x. Magnifying the same spot every time
+   * reads instead like leaning toward the deck: the bands sweep past that zone
+   * as the needle walks in, and the anchor never surprises. Recomputed by
+   * repress(), because it is pure layout.
+   */
+  let lensAnchor = { x: 0, y: 0 };
+
+  /**
    * A cue committed on release that the host has not echoed back yet.
    *
    * While set, frame() leaves the arm where the hand put it — the same
@@ -606,6 +629,18 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     // plus whatever the skin shifts the platter by.
     const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
     const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
+
+    // The reading zone: mid-program radius, horizontally toward the arm (both
+    // liveries mount the pivot on the right). Stage coordinates — the platter is
+    // flex-centred in the stage and shifted by the skin's offset, so its centre
+    // is the stage's centre plus that shift. Re-anchored live when the lens is
+    // already up: a resize mid-hover would otherwise leave it magnifying where
+    // the program area USED to be.
+    lensAnchor = {
+      x: size.width / 2 + cfg.offsetX * plinthW + (geo.rLeadIn + geo.rProgIn) / 2,
+      y: size.height / 2 + cfg.offsetY * plinthH,
+    };
+    if (lensOn) applyLensAnchor();
     if (cfg.leverAt) {
       // A deck with a plinth has a real place for the lever: beside the arm base,
       // where your hand already is. Nothing clips it when it lands outside the
@@ -654,9 +689,16 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     lastPeaks = onSide.map((t) => t.peaks);
     lastEtch = sideLabel(side);
     lastTitles = onSide.map((t) => t.title);
+    // A pressing that emptied under the lens takes the lens with it — there is
+    // no record left to magnify, and hover would otherwise hold the slipmat at
+    // 2.2x until the next pointer move.
+    if (bands.length === 0) setLens(false);
     // Unconditional, not paintAt(): the bands and the geometry just changed, so
-    // the canvas needs redrawing even when the resolution happens to match.
-    paint(1);
+    // the canvas needs redrawing even when the resolution happens to match. At
+    // the LENS'S resolution — a re-press landing mid-hover (peaks resolving, a
+    // queue edit) used to rasterise at 1x under a stage still scaled to 2.2,
+    // leaving magnified blur until the next zoom change.
+    paint(lensOn ? CUE_ZOOM : 1);
   }
 
   /**
@@ -793,6 +835,14 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       `${(clientX - d.left).toFixed(1)}px ${(clientY - d.top).toFixed(1)}px`;
   }
 
+  /** Aim the lens at the reading zone (see lensAnchor). Stage coordinates
+   *  straight from layout — no rect is measured, so a stage mid-transition
+   *  can't contaminate the anchor the way a rect read would. */
+  function applyLensAnchor() {
+    stage.style.transformOrigin =
+      `${lensAnchor.x.toFixed(1)}px ${lensAnchor.y.toFixed(1)}px`;
+  }
+
   /**
    * Screen point → groove radius.
    *
@@ -812,6 +862,59 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     const x = (clientX - rect.left) / unit - geo.cx;
     const y = (clientY - rect.top) / unit - geo.cy;
     return Math.hypot(x, y);
+  }
+
+  /** Raise or drop the magnifier, re-rasterising the record to match. */
+  function setLens(on: boolean) {
+    if (on === lensOn) return;
+    lensOn = on;
+    deck.classList.toggle("zoomed", on);
+    // Without the matching repaint this is a CSS upscale of a fixed bitmap —
+    // bigger grooves and no more detail, which is the opposite of the point.
+    paintAt(on ? CUE_ZOOM : 1);
+  }
+
+  /**
+   * Is this screen point over the record itself?
+   *
+   * The disc, not the deck: the plinth carries real controls — START/STOP, the
+   * speed buttons, the pitch fader — and a magnifier that scales the button
+   * being aimed at turns it into a moving target. So the lens covers the one
+   * surface with detail to reveal and leaves the furniture at 1x.
+   *
+   * `radiusAt` measures the platter AS RENDERED, and that is the right space
+   * here: raised, the lens grows the record around its anchor, so the question
+   * becomes "is the cursor over the magnified record" — which covers more
+   * screen than the 1x one. Crossing the edge therefore re-scales the thing
+   * being measured in the direction that keeps the answer stable: enter at the
+   * true edge, leave at the magnified one. Hysteresis for free, no flutter.
+   */
+  function overRecord(clientX: number, clientY: number): boolean {
+    return bands.length > 0 && radiusAt(clientX, clientY) <= geo.rEdge;
+  }
+
+  /**
+   * Hover the record -> the reading zone magnifies. THE ANCHOR IS CHOSEN WHEN
+   * THE LENS RISES AND NEVER MOVES WHILE IT IS UP — that is the whole rule, and
+   * both triggers obey it: a hover rises on the fixed reading zone
+   * (applyLensAnchor), a drag that raises the lens itself rises on its press
+   * point (onDown), because a scale arriving under a pressed cursor re-maps the
+   * groove beneath it for every origin but that one (see anchorMagnifier). An
+   * origin change at any other moment is a jump at 2.2x, which is why nothing
+   * here re-anchors per move.
+   *
+   * While a drag is live it owns the lens outright, and on release `up` hands
+   * the pointer's last position back here, so a drop with the cursor still on
+   * the record stays magnified instead of blinking out and straight back in.
+   */
+  function onHoverMove(e: PointerEvent) {
+    if (dragging) return;
+    const over = overRecord(e.clientX, e.clientY);
+    // Anchor strictly before raising: the first zoomed paint must already be
+    // about the reading zone. Guarded on the rise so a lens the DRAG raised on
+    // its press point is left alone while hover keeps it up after the release.
+    if (over && !lensOn) applyLensAnchor();
+    setLens(over);
   }
 
   /**
@@ -845,14 +948,18 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     // it never happened. The motor is left alone: picking the arm up is not
     // touching START/STOP, and the drag ends in a play that starts it anyway.
     parked = false;
-    // Anchor the lens NOW, while nothing is transformed yet, and leave it there.
-    // The zoom itself waits for the first move; the anchor cannot, because the
-    // press point is the only point whose groove survives the zoom unchanged.
-    anchorMagnifier(e.clientX, e.clientY);
+    // Anchor the lens NOW — but only when the drag will be the thing raising
+    // it. A lens already up is anchored on the reading zone at 2.2x, and moving
+    // its origin mid-zoom jumps the whole picture under the hand; nothing needs
+    // moving anyway, since no scale change is coming. For a grab that starts
+    // with the lens down (the headshell overhangs the rim), the press point is
+    // the one origin whose groove survives the arriving zoom unchanged, and it
+    // must be taken here, while nothing is transformed yet — the zoom itself
+    // waits for the first move.
+    if (!lensOn) anchorMagnifier(e.clientX, e.clientY);
     // Kills the arm's tracking transition for the duration: a .22s ease is right
     // for a cue jump, but under the cursor it reads as lag.
     deck.classList.add("dragging");
-    let zoomed = false;
     // Previous pointer sample, for the scrape's speed. Seeded from the press so
     // the first move is measured against where the hand actually was.
     let lastPt = { x: e.clientX, y: e.clientY, t: e.timeStamp };
@@ -872,39 +979,32 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
       showCue(r);
 
-      // ZOOM IN FOR THE DRAG. A cue is aimed at a band, and at a normal deck size
-      // a band on a full side is a few pixels of groove — you are choosing a
-      // track by pointing at something you cannot read. Magnifying for the length
-      // of the gesture makes the pressing legible exactly while it is being aimed
-      // at, and costs nothing the rest of the time.
+      // ZOOM FOR THE DRAG. Hovering the record has usually raised the lens
+      // already (onHoverMove), but the headshell overhangs the rim and a lifted
+      // arm is offset besides, so a real grab often starts OUTSIDE the record —
+      // this is what raises the lens for those.
       //
       // ON THE FIRST MOVE, not on the press: a press that never becomes a drag
       // resolves nothing (see above), so zooming for it would flash the whole
       // deck in and straight back out on every stray click of the headshell.
       //
-      // The canvas is re-rasterised to match. Without that this would be a CSS
-      // upscale of a fixed bitmap — bigger grooves and no more detail, which is
-      // the opposite of the point.
-      //
       // The lens itself was anchored on the press point back in onDown, and does
       // not move again for the rest of the gesture — see anchorMagnifier for why
       // that particular point and why nothing else will do.
-      if (!zoomed) {
-        zoomed = true;
-        deck.classList.add("zoomed");
-        paintAt(CUE_ZOOM);
-      }
+      setLens(true);
     };
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       dragging = false;
       sounds.endScrape();
       deck.classList.remove("dragging");
-      // Back to 1x. The origin is deliberately LEFT where it was: at scale 1 the
-      // transform is the identity whatever its origin, so keeping it lets the
-      // zoom-out ease from where the lens actually was instead of jumping to the
-      // middle first.
-      deck.classList.remove("zoomed");
-      paintAt(1);
+      // The lens goes back to hover's rules: a drop with the cursor still on the
+      // record stays magnified rather than blinking out and in, and a release
+      // off the record (or a pointercancel, whose coordinates land nowhere)
+      // eases out. On the way out the origin is deliberately LEFT where it was:
+      // at scale 1 the transform is the identity whatever its origin, so keeping
+      // it lets the zoom-out ease from where the lens actually was instead of
+      // jumping to the middle first.
+      setLens(overRecord(ev.clientX, ev.clientY));
       target.removeEventListener("pointermove", move);
       target.removeEventListener("pointerup", up);
       target.removeEventListener("pointercancel", up);
@@ -1202,6 +1302,17 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
       // counterweight (you don't drag a real tonearm by those), and not the
       // record — pressing the disc is inert.
       (deck.querySelector(".head") as HTMLElement).addEventListener("pointerdown", onDown);
+
+      // THE MAGNIFIER RISES ON HOVER, not only for the drag. On `deck`, whose
+      // moves bubble up from everything on it, so a grab of the headshell
+      // inherits a lens hover already raised; `overRecord` inside keeps the
+      // actual zoom to the disc.
+      // `pointerleave` catches the exits a move can't — off the deck entirely —
+      // and defers to a live drag, whose capture retargets events mid-gesture.
+      deck.addEventListener("pointermove", onHoverMove);
+      deck.addEventListener("pointerleave", () => {
+        if (!dragging) setLens(false);
+      });
 
       // THE CUE LEVER RAISES AND LOWERS THE ARM. That is its whole job, and the
       // raised arm is what pauses the music — not the other way round. Lowering it

@@ -60,16 +60,18 @@ export const DECK_CSS = `
   display: flex;
   align-items: center;
   justify-content: center;
-  /* The origin is written per-frame by focusMagnifier(); this is only the value
-     before the first drag. --zoom is the whole animation. */
+  /* The origin is written when the lens rises (applyLensAnchor / the drag's
+     anchorMagnifier) and then held; this is only the value before the first
+     rise. --zoom is the whole animation. */
   transform: scale(var(--zoom, 1));
   transform-origin: 50% 50%;
   transition: transform .22s var(--deck-ease, cubic-bezier(.22,.68,.25,1));
 }
-/* Only the SCALE is transitioned, and transform-origin deliberately is not: the
-   origin is rewritten on every pointermove, and easing it would make the deck
-   swim along behind the needle instead of pivoting about it. Changing the origin
-   alone re-renders without firing a transition, since the transform VALUE is
+/* Only the SCALE is transitioned, and transform-origin deliberately is not:
+   the origin moves only while the scale is 1 (a rise picks it, a raised lens
+   never moves it), so easing it could only ever animate a no-op — and easing it
+   would smear any future per-move origin into a swim. Changing the origin alone
+   re-renders without firing a transition, since the transform VALUE is
    untouched. */
 .zoomed .stage { --zoom: var(--cue-zoom, 2.2); }
 /* The magnifier is an aid, not decoration, so it still zooms — but it arrives

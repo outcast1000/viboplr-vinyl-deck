@@ -966,16 +966,18 @@ var __viboplrPlugin = (function(exports) {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* The origin is written per-frame by focusMagnifier(); this is only the value
-     before the first drag. --zoom is the whole animation. */
+  /* The origin is written when the lens rises (applyLensAnchor / the drag's
+     anchorMagnifier) and then held; this is only the value before the first
+     rise. --zoom is the whole animation. */
   transform: scale(var(--zoom, 1));
   transform-origin: 50% 50%;
   transition: transform .22s var(--deck-ease, cubic-bezier(.22,.68,.25,1));
 }
-/* Only the SCALE is transitioned, and transform-origin deliberately is not: the
-   origin is rewritten on every pointermove, and easing it would make the deck
-   swim along behind the needle instead of pivoting about it. Changing the origin
-   alone re-renders without firing a transition, since the transform VALUE is
+/* Only the SCALE is transitioned, and transform-origin deliberately is not:
+   the origin moves only while the scale is 1 (a rise picks it, a raised lens
+   never moves it), so easing it could only ever animate a no-op — and easing it
+   would smear any future per-move origin into a swim. Changing the origin alone
+   re-renders without firing a transition, since the transform VALUE is
    untouched. */
 .zoomed .stage { --zoom: var(--cue-zoom, 2.2); }
 /* The magnifier is an aid, not decoration, so it still zooms — but it arrives
@@ -2366,7 +2368,10 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	var CUE_HOLD_CEILING_MS = 3e4;
 	var CUE_HOLD_EPSILON_SECS = 2;
 	/**
-	* How far the deck magnifies while the headshell is being dragged.
+	* How far the deck magnifies under the lens — up whenever the cursor is over
+	* the record (aimed at the fixed reading zone, see lensAnchor) and held through
+	* a headshell drag (a drag that raises it itself anchors on the press point,
+	* see anchorMagnifier).
 	*
 	* Chosen against the thing it exists to make readable. The painter lays grooves
 	* at a 1.15px pitch, so at 1x a band on a full twelve-track side is a handful of
@@ -2374,8 +2379,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	* or so with visibly varying brightness, which is the difference between aiming
 	* at a track and aiming at a smudge.
 	*
-	* Not higher, because the loupe is anchored where you grabbed and the rest of the
-	* record has to stay recognisable around it — past roughly this the band you are
+	* Not higher, because the loupe holds one anchor for its whole stay and the
+	* rest of the record has to stay recognisable around it — past roughly this the band you are
 	* leaving and the one you are heading for are both off-screen, and a cue you
 	* cannot aim in context is no easier than one you cannot see.
 	*/
@@ -2574,6 +2579,27 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		*/
 		let dragging = false;
 		/**
+		* The magnifier is up. One flag for its two triggers — hovering the record,
+		* and dragging the headshell — because they hand the lens to each other
+		* mid-gesture and each used to assume it owned the teardown.
+		*/
+		let lensOn = false;
+		/**
+		* Where a hover-raised lens looks: the READING ZONE, in stage coordinates.
+		*
+		* A fixed point — the middle of the program area on the arm's side — rather
+		* than the cursor. Following the cursor made the whole deck pan under a hand
+		* that was just crossing it, so inspecting the record meant chasing a picture
+		* that moved opposite the mouse at 1.2x. Magnifying the same spot every time
+		* reads instead like leaning toward the deck: the bands sweep past that zone
+		* as the needle walks in, and the anchor never surprises. Recomputed by
+		* repress(), because it is pure layout.
+		*/
+		let lensAnchor = {
+			x: 0,
+			y: 0
+		};
+		/**
 		* A cue committed on release that the host has not echoed back yet.
 		*
 		* While set, frame() leaves the arm where the hand put it — the same
@@ -2724,6 +2750,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const leverH = 22 * k;
 			const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
 			const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
+			lensAnchor = {
+				x: size.width / 2 + cfg.offsetX * plinthW + (geo.rLeadIn + geo.rProgIn) / 2,
+				y: size.height / 2 + cfg.offsetY * plinthH
+			};
+			if (lensOn) applyLensAnchor();
 			if (cfg.leverAt) {
 				lever.style.left = `${cfg.leverAt.x * plinthW - platterLeft - leverW / 2}px`;
 				lever.style.top = `${cfg.leverAt.y * plinthH - platterTop - leverH / 2}px`;
@@ -2743,7 +2774,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			lastPeaks = onSide.map((t) => t.peaks);
 			lastEtch = sideLabel(side);
 			lastTitles = onSide.map((t) => t.title);
-			paint(1);
+			if (bands.length === 0) setLens(false);
+			paint(lensOn ? CUE_ZOOM : 1);
 		}
 		/**
 		* Re-rasterise the last pressing at `scale` device pixels per CSS pixel.
@@ -2867,6 +2899,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const d = deck.getBoundingClientRect();
 			stage.style.transformOrigin = `${(clientX - d.left).toFixed(1)}px ${(clientY - d.top).toFixed(1)}px`;
 		}
+		/** Aim the lens at the reading zone (see lensAnchor). Stage coordinates
+		*  straight from layout — no rect is measured, so a stage mid-transition
+		*  can't contaminate the anchor the way a rect read would. */
+		function applyLensAnchor() {
+			stage.style.transformOrigin = `${lensAnchor.x.toFixed(1)}px ${lensAnchor.y.toFixed(1)}px`;
+		}
 		/**
 		* Screen point → groove radius.
 		*
@@ -2886,6 +2924,51 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const x = (clientX - rect.left) / unit - geo.cx;
 			const y = (clientY - rect.top) / unit - geo.cy;
 			return Math.hypot(x, y);
+		}
+		/** Raise or drop the magnifier, re-rasterising the record to match. */
+		function setLens(on) {
+			if (on === lensOn) return;
+			lensOn = on;
+			deck.classList.toggle("zoomed", on);
+			paintAt(on ? CUE_ZOOM : 1);
+		}
+		/**
+		* Is this screen point over the record itself?
+		*
+		* The disc, not the deck: the plinth carries real controls — START/STOP, the
+		* speed buttons, the pitch fader — and a magnifier that scales the button
+		* being aimed at turns it into a moving target. So the lens covers the one
+		* surface with detail to reveal and leaves the furniture at 1x.
+		*
+		* `radiusAt` measures the platter AS RENDERED, and that is the right space
+		* here: raised, the lens grows the record around its anchor, so the question
+		* becomes "is the cursor over the magnified record" — which covers more
+		* screen than the 1x one. Crossing the edge therefore re-scales the thing
+		* being measured in the direction that keeps the answer stable: enter at the
+		* true edge, leave at the magnified one. Hysteresis for free, no flutter.
+		*/
+		function overRecord(clientX, clientY) {
+			return bands.length > 0 && radiusAt(clientX, clientY) <= geo.rEdge;
+		}
+		/**
+		* Hover the record -> the reading zone magnifies. THE ANCHOR IS CHOSEN WHEN
+		* THE LENS RISES AND NEVER MOVES WHILE IT IS UP — that is the whole rule, and
+		* both triggers obey it: a hover rises on the fixed reading zone
+		* (applyLensAnchor), a drag that raises the lens itself rises on its press
+		* point (onDown), because a scale arriving under a pressed cursor re-maps the
+		* groove beneath it for every origin but that one (see anchorMagnifier). An
+		* origin change at any other moment is a jump at 2.2x, which is why nothing
+		* here re-anchors per move.
+		*
+		* While a drag is live it owns the lens outright, and on release `up` hands
+		* the pointer's last position back here, so a drop with the cursor still on
+		* the record stays magnified instead of blinking out and straight back in.
+		*/
+		function onHoverMove(e) {
+			if (dragging) return;
+			const over = overRecord(e.clientX, e.clientY);
+			if (over && !lensOn) applyLensAnchor();
+			setLens(over);
 		}
 		/**
 		* Cue by dragging the headshell. This is the ONLY cue gesture: the record
@@ -2907,9 +2990,8 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			let last = null;
 			dragging = true;
 			parked = false;
-			anchorMagnifier(e.clientX, e.clientY);
+			if (!lensOn) anchorMagnifier(e.clientX, e.clientY);
 			deck.classList.add("dragging");
-			let zoomed = false;
 			let lastPt = {
 				x: e.clientX,
 				y: e.clientY,
@@ -2927,18 +3009,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				last = radiusToPosition(bands, r);
 				wroteDeg = styleVar(arm, "--deg", `${armAngleDeg(r, geo, mountPoint).toFixed(2)}deg`, wroteDeg);
 				showCue(r);
-				if (!zoomed) {
-					zoomed = true;
-					deck.classList.add("zoomed");
-					paintAt(CUE_ZOOM);
-				}
+				setLens(true);
 			};
-			const up = () => {
+			const up = (ev) => {
 				dragging = false;
 				sounds.endScrape();
 				deck.classList.remove("dragging");
-				deck.classList.remove("zoomed");
-				paintAt(1);
+				setLens(overRecord(ev.clientX, ev.clientY));
 				target.removeEventListener("pointermove", move);
 				target.removeEventListener("pointerup", up);
 				target.removeEventListener("pointercancel", up);
@@ -3084,6 +3161,10 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				lever = deck.querySelector(".lever");
 				rest = deck.querySelector(".rest");
 				deck.querySelector(".head").addEventListener("pointerdown", onDown);
+				deck.addEventListener("pointermove", onHoverMove);
+				deck.addEventListener("pointerleave", () => {
+					if (!dragging) setLens(false);
+				});
 				lever.addEventListener("click", () => {
 					armUp = !armUp;
 					parked = false;
