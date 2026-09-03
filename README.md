@@ -1,6 +1,6 @@
 # Viboplr Vinyl Deck
 
-Your play queue, pressed onto a single-sided record.
+Your play queue, pressed onto a record, split across sides like a real LP.
 
 One concentric groove band per track, band width proportional to its duration, and
 the smooth black land between bands standing in for the inter-track gap — so the
