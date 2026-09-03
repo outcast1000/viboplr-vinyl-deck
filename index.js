@@ -979,7 +979,7 @@ var __viboplrPlugin = (function(exports) {
    would smear any future per-move origin into a swim. Changing the origin alone
    re-renders without firing a transition, since the transform VALUE is
    untouched. */
-.zoomed .stage { --zoom: var(--cue-zoom, 2.2); }
+.zoomed .stage { --zoom: var(--cue-zoom, 2.5); }
 /* The magnifier is an aid, not decoration, so it still zooms — but it arrives
    without the travel. */
 .reduce-motion .stage { transition: none; }
@@ -2125,7 +2125,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		offsetX: 0,
 		offsetY: 0,
 		arm: ARM,
-		furniture: false
+		furniture: false,
+		lensZoneDeg: 45,
+		lensZoneR: .85
 	};
 	var SKINS = {
 		studio: STUDIO,
@@ -2148,7 +2150,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			restAt: {
 				x: .8,
 				y: .82
-			}
+			},
+			lensZoneDeg: 75,
+			lensZoneR: .5
 		}
 	};
 	/** Unknown names fall back to the plain deck rather than rendering nothing. */
@@ -2375,7 +2379,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	*
 	* Chosen against the thing it exists to make readable. The painter lays grooves
 	* at a 1.15px pitch, so at 1x a band on a full twelve-track side is a handful of
-	* groove rings and its waveform texture is a suggestion; at 2.2x it is a dozen
+	* groove rings and its waveform texture is a suggestion; magnified it is a dozen
 	* or so with visibly varying brightness, which is the difference between aiming
 	* at a track and aiming at a smudge.
 	*
@@ -2384,7 +2388,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	* leaving and the one you are heading for are both off-screen, and a cue you
 	* cannot aim in context is no easier than one you cannot see.
 	*/
-	var CUE_ZOOM = 2.2;
+	var CUE_ZOOM = 2.5;
 	/** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
 	var PLINTH_HTML = "<div class=\"plinth\"><div class=\"adaptor\"></div><div class=\"target\"></div><div class=\"power\"></div><button class=\"start\" type=\"button\">start &#183; stop</button><div class=\"speeds\"><button class=\"s33\" type=\"button\" aria-label=\"33 rpm\">33</button><button class=\"s45\" type=\"button\" aria-label=\"45 rpm\">45</button></div><div class=\"pscale\">" + [
 		"8",
@@ -2587,8 +2591,9 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		/**
 		* Where a hover-raised lens looks: the READING ZONE, in stage coordinates.
 		*
-		* A fixed point — the middle of the program area on the arm's side — rather
-		* than the cursor. Following the cursor made the whole deck pan under a hand
+		* A fixed point — on the bottom-right of the disc, at the skin's own angle
+		* and program-area depth (SkinConfig.lensZoneDeg / lensZoneR) — rather than
+		* the cursor. Following the cursor made the whole deck pan under a hand
 		* that was just crossing it, so inspecting the record meant chasing a picture
 		* that moved opposite the mouse at 1.2x. Magnifying the same spot every time
 		* reads instead like leaning toward the deck: the bands sweep past that zone
@@ -2750,9 +2755,11 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 			const leverH = 22 * k;
 			const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
 			const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
+			const zoneRad = cfg.lensZoneDeg * Math.PI / 180;
+			const zoneR = geo.rProgIn + cfg.lensZoneR * (geo.rLeadIn - geo.rProgIn);
 			lensAnchor = {
-				x: size.width / 2 + cfg.offsetX * plinthW + (geo.rLeadIn + geo.rProgIn) / 2,
-				y: size.height / 2 + cfg.offsetY * plinthH
+				x: size.width / 2 + cfg.offsetX * plinthW + zoneR * Math.cos(zoneRad),
+				y: size.height / 2 + cfg.offsetY * plinthH + zoneR * Math.sin(zoneRad)
 			};
 			if (lensOn) applyLensAnchor();
 			if (cfg.leverAt) {

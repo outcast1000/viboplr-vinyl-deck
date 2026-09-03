@@ -149,7 +149,7 @@ export const ARM_SETTLE_MS = 500;
  *
  * Chosen against the thing it exists to make readable. The painter lays grooves
  * at a 1.15px pitch, so at 1x a band on a full twelve-track side is a handful of
- * groove rings and its waveform texture is a suggestion; at 2.2x it is a dozen
+ * groove rings and its waveform texture is a suggestion; magnified it is a dozen
  * or so with visibly varying brightness, which is the difference between aiming
  * at a track and aiming at a smudge.
  *
@@ -158,7 +158,7 @@ export const ARM_SETTLE_MS = 500;
  * leaving and the one you are heading for are both off-screen, and a cue you
  * cannot aim in context is no easier than one you cannot see.
  */
-export const CUE_ZOOM = 2.2;
+export const CUE_ZOOM = 2.5;
 
 /** Plinth furniture. Decorative except for START/STOP and the speed buttons. */
 const PLINTH_HTML =
@@ -423,8 +423,9 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   /**
    * Where a hover-raised lens looks: the READING ZONE, in stage coordinates.
    *
-   * A fixed point — the middle of the program area on the arm's side — rather
-   * than the cursor. Following the cursor made the whole deck pan under a hand
+   * A fixed point — on the bottom-right of the disc, at the skin's own angle
+   * and program-area depth (SkinConfig.lensZoneDeg / lensZoneR) — rather than
+   * the cursor. Following the cursor made the whole deck pan under a hand
    * that was just crossing it, so inspecting the record meant chasing a picture
    * that moved opposite the mouse at 1.2x. Magnifying the same spot every time
    * reads instead like leaning toward the deck: the bands sweep past that zone
@@ -630,15 +631,18 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
     const platterLeft = (plinthW - geo.size) / 2 + cfg.offsetX * plinthW;
     const platterTop = (plinthH - geo.size) / 2 + cfg.offsetY * plinthH;
 
-    // The reading zone: mid-program radius, horizontally toward the arm (both
-    // liveries mount the pivot on the right). Stage coordinates — the platter is
-    // flex-centred in the stage and shifted by the skin's offset, so its centre
-    // is the stage's centre plus that shift. Re-anchored live when the lens is
-    // already up: a resize mid-hover would otherwise leave it magnifying where
-    // the program area USED to be.
+    // The reading zone: the angle and radial seat the skin picked for its own
+    // furniture (see SkinConfig.lensZoneDeg / lensZoneR — the disc's bottom-
+    // right on both decks, each at its own pitch and depth). Stage coordinates —
+    // the platter is flex-centred in the stage and shifted by the skin's offset,
+    // so its centre is the stage's centre plus that shift. Re-anchored live when
+    // the lens is already up: a resize mid-hover would otherwise leave it
+    // magnifying where the program area USED to be.
+    const zoneRad = (cfg.lensZoneDeg * Math.PI) / 180;
+    const zoneR = geo.rProgIn + cfg.lensZoneR * (geo.rLeadIn - geo.rProgIn);
     lensAnchor = {
-      x: size.width / 2 + cfg.offsetX * plinthW + (geo.rLeadIn + geo.rProgIn) / 2,
-      y: size.height / 2 + cfg.offsetY * plinthH,
+      x: size.width / 2 + cfg.offsetX * plinthW + zoneR * Math.cos(zoneRad),
+      y: size.height / 2 + cfg.offsetY * plinthH + zoneR * Math.sin(zoneRad),
     };
     if (lensOn) applyLensAnchor();
     if (cfg.leverAt) {

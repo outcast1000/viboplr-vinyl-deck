@@ -66,6 +66,20 @@ export interface SkinConfig {
    * never needs one.
    */
   restAt?: { x: number; y: number };
+  /**
+   * Where the hover lens aims: the READING ZONE's angle on the disc, in degrees
+   * clockwise from 3 o'clock (screen y grows downward, so 45 is the disc's
+   * bottom-right diagonal). Each deck aims the lens where its own arm and
+   * furniture leave the grooves unobstructed.
+   */
+  lensZoneDeg: number;
+  /**
+   * The zone's radial seat, as the fraction of the way from the innermost
+   * program groove out to the lead-in (0.5 = the middle of the program area,
+   * 1 = the outermost groove). Kept inside the recorded band on purpose — a
+   * zone past the lead-in magnifies run-off and slipmat, not music.
+   */
+  lensZoneR: number;
 }
 
 /**
@@ -79,6 +93,12 @@ const STUDIO: SkinConfig = {
   offsetY: 0,
   arm: ARM,
   furniture: false,
+  // Well down the bottom-right diagonal, toward the disc's corner: seated at
+  // the outer reaches of the program area rather than its middle, so the lens
+  // sits low and right without leaving the grooves. Not further, or it would
+  // crowd the cue lever parked just outside the disc on this same diagonal.
+  lensZoneDeg: 45,
+  lensZoneR: 0.85,
 };
 
 /**
@@ -120,6 +140,13 @@ const SL1200: SkinConfig = {
   // record — aimed at the photo's spot the shell overhung the pitch scale, and a
   // parked arm lying across another control reads as a collision, not a rest.
   restAt: { x: 0.8, y: 0.82 },
+  // Steeper than the studio deck's 45: this arm's pivot sits only 23° above the
+  // horizontal, so its tube crosses the disc's right-middle almost flat and a
+  // shallow zone would spend the end of every side magnifying tonearm. 75 tucks
+  // the zone under the arm's sweep, nearly at the disc's six o'clock, and
+  // mid-program keeps it centred in the band the needle actually reads.
+  lensZoneDeg: 75,
+  lensZoneR: 0.5,
 };
 
 export const SKINS: Record<DeckSkin, SkinConfig> = {

@@ -16,6 +16,7 @@ import {
   ARM_SETTLE_MS,
   CUE_HOLD_CEILING_MS,
   CUE_HOLD_TIMEOUT_MS,
+  CUE_ZOOM,
   createVinylDeckVisualizer,
   RATE_45,
 } from "./visualizer";
@@ -1286,9 +1287,10 @@ describe("the cue magnifier", () => {
   it("rises over the record onto the reading zone, and stays put", () => {
     // Inspection, not only aiming: the bands are a few pixels of groove at rest,
     // so reading the record should not require picking the arm up. But the lens
-    // magnifies ONE fixed area — mid-program, on the arm's side — not wherever
-    // the mouse is: an anchor riding the cursor panned the whole deck opposite
-    // the hand at 1.2x, so crossing the record meant chasing the picture.
+    // magnifies ONE fixed area — mid-program, at the skin's reading-zone angle
+    // on the disc's bottom-right — not wherever the mouse is: an anchor riding
+    // the cursor panned the whole deck opposite the hand at 1.2x, so crossing
+    // the record meant chasing the picture.
     const { root, deck } = mounted();
     const stage = root.querySelector(".stage") as HTMLElement;
     expect(deck.classList.contains("zoomed")).toBe(false);
@@ -1296,10 +1298,13 @@ describe("the cue magnifier", () => {
     hover(deck, geo.cx - geo.rLeadIn, geo.cy);
     expect(deck.classList.contains("zoomed")).toBe(true);
     // The studio deck fills the slot with no offset, so the reading zone is the
-    // slot's centre pushed right to the middle of the program area.
+    // slot's centre pushed down the 45° bottom-right diagonal to the outer
+    // program area (lensZoneDeg = 45, lensZoneR = 0.85).
+    const rZone = geo.rProgIn + 0.85 * (geo.rLeadIn - geo.rProgIn);
+    const zone = (45 * Math.PI) / 180;
     const [ox, oy] = stage.style.transformOrigin.split(" ").map(parseFloat);
-    expect(ox).toBeCloseTo(SIZE / 2 + (geo.rLeadIn + geo.rProgIn) / 2, 0);
-    expect(oy).toBeCloseTo(SIZE / 2, 0);
+    expect(ox).toBeCloseTo(SIZE / 2 + rZone * Math.cos(zone), 0);
+    expect(oy).toBeCloseTo(SIZE / 2 + rZone * Math.sin(zone), 0);
 
     // Sweeping the cursor across the record moves nothing.
     const entered = stage.style.transformOrigin;
@@ -1460,7 +1465,7 @@ describe("the cue magnifier", () => {
     const { root, playQueueIndex } = mounted();
     const head = root.querySelector(".head") as HTMLElement;
     const r = positionToRadius(bands, 4, 240, geo);
-    const Z = 2.2;
+    const Z = CUE_ZOOM;
 
     const down = { bubbles: true, button: 0, pointerId: 1, clientX: geo.cx - geo.rLeadIn, clientY: geo.cy };
     head.dispatchEvent(new MouseEvent("pointerdown", down) as unknown as PointerEvent);
@@ -1576,7 +1581,7 @@ describe("the cue magnifier", () => {
     const platterEl = root.querySelector(".platter") as HTMLElement;
     const stage = root.querySelector(".stage") as HTMLElement;
     platterEl.getBoundingClientRect = () => {
-      const z = deck.classList.contains("zoomed") ? 2.2 : 1;
+      const z = deck.classList.contains("zoomed") ? CUE_ZOOM : 1;
       const [ox, oy] = (stage.style.transformOrigin || "0px 0px")
         .split(" ")
         .map((v) => parseFloat(v) || 0);
@@ -1635,7 +1640,7 @@ describe("the cue magnifier", () => {
    * geometry is aiming somewhere the user isn't. Inverts the same
    * `z·X + (1−z)·O` the browser applies, with O the press point.
    */
-  function zoomedClientX(r: number, pressX: number, g = geoSL, z = 2.2) {
+  function zoomedClientX(r: number, pressX: number, g = geoSL, z = CUE_ZOOM) {
     return z * (g.cx - r) + (1 - z) * pressX;
   }
 

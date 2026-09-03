@@ -73,7 +73,7 @@ export const DECK_CSS = `
    would smear any future per-move origin into a swim. Changing the origin alone
    re-renders without firing a transition, since the transform VALUE is
    untouched. */
-.zoomed .stage { --zoom: var(--cue-zoom, 2.2); }
+.zoomed .stage { --zoom: var(--cue-zoom, 2.5); }
 /* The magnifier is an aid, not decoration, so it still zooms — but it arrives
    without the travel. */
 .reduce-motion .stage { transition: none; }
