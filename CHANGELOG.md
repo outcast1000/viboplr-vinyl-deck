@@ -1,3 +1,19 @@
+## 1.6.0
+
+- **The reading zone drops to the disc's bottom-right, and each deck seats its
+  own.** The hover lens used to aim at one hardcoded spot — mid-program,
+  horizontally toward the arm — on both liveries. But what makes a reading spot
+  good is what *else* lives near it, and that differs per deck: the studio deck
+  now reads the outer program grooves well down the bottom-right diagonal,
+  toward the corner but clear of the cue lever parked just outside the disc
+  there, while the SL-1200 reads nearly at six o'clock at mid-program, tucked
+  under an arm whose low pivot lays the tube almost flat across the disc's
+  right. The zone's angle and depth are part of each skin now, alongside its
+  arm and furniture.
+
+- **A touch more glass.** The lens magnifies at 2.5× rather than 2.2× — the
+  same fixed anchor, a little more groove under it.
+
 ## 1.5.0
 
 - **Hover the record to magnify it.** The lens used to exist only for the length

@@ -1,9 +1,9 @@
 {
   "id": "vinyl-deck",
   "name": "Vinyl Deck",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "author": "Viboplr",
-  "description": "Presses the play queue onto a record: one groove band per track, sized by its duration and cut from its own waveform, with long queues split across sides like a real LP. Hover the record to magnify the grooves, drag the headshell to cue, and use the cue lever to lift or drop the needle. Comes in two decks \u2014 a bare record on black, or a silver direct-drive console with a plinth, an S-shaped arm and a working START/STOP. Pick either from the visualizer button in the Now Playing view.",
+  "description": "Presses the play queue onto a record: one groove band per track, sized by its duration and cut from its own waveform, with long queues split across sides like a real LP. Hover the record to magnify the grooves, drag the headshell to cue, and use the cue lever to lift or drop the needle. Comes in two decks — a bare record on black, or a silver direct-drive console with a plinth, an S-shaped arm and a working START/STOP. Pick either from the visualizer button in the Now Playing view.",
   "icon": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8zm0 3a1 1 0 1 0 0 2 1 1 0 0 0 0-2z",
   "minAppVersion": "1.0.16",
   "updateUrl": "https://github.com/outcast1000/viboplr-vinyl-deck/releases/latest/download/update.json",
@@ -24,7 +24,7 @@
       },
       {
         "id": "sl1200",
-        "name": "Vinyl Deck \u00b7 SL-1200",
+        "name": "Vinyl Deck · SL-1200",
         "placements": [
           "nowplaying",
           "fullscreen"
