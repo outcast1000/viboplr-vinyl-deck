@@ -92,9 +92,54 @@ const FRAME_GAP_MS = 250;
  * it hides is well under a pixel of band), or at the timeout — a host that
  * never complies gets the arm back, because a hold that could latch would pin
  * the needle to a groove nothing is playing.
+ *
+ * **An echo is only believed once the host has stopped loading.** This is the
+ * part a timeout alone could not fix, and it is why cueing a remote track still
+ * wobbled after the hold landed. `loadQueueIndex` sets the host's reported track
+ * and position SYNCHRONOUSLY, before a single byte is fetched — so the very next
+ * frame carries exactly the index and position the cue asked for, the echo test
+ * passes, and the hold lets go while the resolve has not even started. Then the
+ * engine installs the stream and starts reporting from its own clock, which
+ * begins at 0 on a fresh load and only reaches the seek once enough of the
+ * stream has buffered. The arm is by then unheld, so it swings to the outer
+ * groove and back: the original wobble, moved later and made worse by exactly
+ * the network latency that made the track remote. Waiting for `loading` to clear
+ * before believing an echo is the only test that can tell the host's intent
+ * apart from its arrival, because both report the same numbers.
+ *
+ * A host too old to report `loading` says `undefined`, which is neither — those
+ * hosts keep the previous behaviour, which is also all they need: a local file
+ * resolves inside a frame or two.
+ *
+ * So the timeout stops being the primary release and becomes a backstop, and it
+ * is measured on the host being IDLE: every loading frame pushes it out, so the
+ * window is "3s after the host went quiet" rather than 3s of wall clock that a
+ * slow stream spends before the interesting part. `CUE_HOLD_CEILING_MS` is what
+ * keeps that from latching on a host stuck loading forever — a long leash, not
+ * no leash. It is generous on purpose: every second of it is a second the user
+ * is watching the needle sit exactly where they put it, which is what they
+ * asked for, while the alternative is a needle that visibly lies.
  */
 export const CUE_HOLD_TIMEOUT_MS = 3000;
+export const CUE_HOLD_CEILING_MS = 30000;
 const CUE_HOLD_EPSILON_SECS = 2;
+
+/**
+ * How long the arm eases over a correction it was NOT expecting.
+ *
+ * A hold that ends by landing needs none of this: the angle the deck derives is
+ * the angle it is already showing, within the epsilon, so there is nothing to
+ * travel. A hold that ends on a timeout is the opposite — the host never
+ * confirmed the cue, so the arm is about to move somewhere the user did not put
+ * it, and `.arm`'s 220ms linear tracking ease makes that read as a twitch.
+ *
+ * Easing it over half a second instead reads as the arm settling. This is
+ * cosmetic and deliberately so: it does not make a wrong angle right, it stops
+ * a correction that the deck could not avoid from looking like a fault. Unlike
+ * everything above it costs nothing on the host side, so it applies on every
+ * host, including the ones that will never report `loading`.
+ */
+export const ARM_SETTLE_MS = 500;
 
 /**
  * How far the deck magnifies while the headshell is being dragged.
@@ -377,7 +422,11 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    * position, so once the host is on the cued track, whatever position it
    * reports IS the truth and waiting for a particular one would hold forever.
    */
-  let cueHold: { index: number; secs: number | null; untilMs: number } | null = null;
+  let cueHold:
+    | { index: number; secs: number | null; untilMs: number; ceilingMs: number }
+    | null = null;
+  // When the arm may stop easing a correction it did not choose — see ARM_SETTLE_MS.
+  let settleUntilMs: number | null = null;
 
   /** The plugin sandbox passes `document: undefined` and a frozen `window`, so
    *  ambient DOM is unavailable by design. Everything comes through the one
@@ -430,6 +479,7 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
   let wroteLifted: boolean | null = null;
   let wroteMotorOff: boolean | null = null;
   let wrotePlacing: boolean | null = null;
+  let wroteSettling: boolean | null = null;
   /** "No record on the platter" — see the empty branch in frame(). */
   let wroteEmpty: boolean | null = null;
   let wroteOffSpeed: boolean | null = null;
@@ -667,7 +717,13 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
    * arrives placed (see FRAME_GAP_MS) instead of holding a stale gesture.
    */
   function holdCue(index: number, secs: number | null) {
-    cueHold = { index, secs, untilMs: (lastMs ?? 0) + CUE_HOLD_TIMEOUT_MS };
+    const zero = lastMs ?? 0;
+    cueHold = {
+      index,
+      secs,
+      untilMs: zero + CUE_HOLD_TIMEOUT_MS,
+      ceilingMs: zero + CUE_HOLD_CEILING_MS,
+    };
   }
 
   /**
@@ -1417,6 +1473,10 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
           // Neither state leaves a cue anything to wait for: an empty deck has
           // no pressing, and a stop has already sent the arm home over it.
           cueHold = null;
+          // The return to the rest has a sweep of its own (`.motor-off .arm`);
+          // a settle left over from a cue would be competing with it.
+          settleUntilMs = null;
+          wroteSettling = cssClass(deck, "settling", false, wroteSettling);
           if (restDeg !== null) {
             wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
           }
@@ -1426,12 +1486,52 @@ export function createVinylDeckVisualizer(skin: DeckSkin = "studio"): PluginVisu
           // swept the arm away from the drop and back again on every cue. See
           // CUE_HOLD_TIMEOUT_MS for both ways the hold ends.
           if (cueHold) {
+            // A host still resolving reports the cue it was HANDED, not one it
+            // has reached, so its echo proves nothing — and believing it here is
+            // what let go of the arm just before a remote stream's engine
+            // started reporting from 0. Only an explicit `true` suppresses the
+            // test: `undefined` is a host that cannot say, and those hosts had
+            // nothing to wait for anyway.
+            const working = state.loading === true;
+            // Idle time only, so a slow stream spends the network's latency
+            // rather than the deck's patience. See CUE_HOLD_CEILING_MS.
+            if (working) cueHold.untilMs = state.timeMs + CUE_HOLD_TIMEOUT_MS;
             const landed =
+              !working &&
               state.currentIndex === cueHold.index &&
               (cueHold.secs === null ||
                 Math.abs(state.positionSecs - cueHold.secs) <= CUE_HOLD_EPSILON_SECS);
-            if (landed || state.timeMs >= cueHold.untilMs) cueHold = null;
+            const expired =
+              state.timeMs >= cueHold.untilMs || state.timeMs >= cueHold.ceilingMs;
+            if (landed || expired) {
+              // Only the giving-up half eases: a landing lands on the angle
+              // already drawn, so easing it would animate nothing.
+              //
+              // And never on a `placing` frame. A deck that was off-screen when
+              // the cue was made times the hold out on its first frame back
+              // (`holdCue` zeroes on the last frame DRAWN, deliberately), so
+              // that frame is a give-up — but it is also the frame the deck is
+              // supposed to arrive already in position on, and easing it would
+              // put back the sweep-in that 1.4.3 removed. `.placing .arm` wins
+              // on source order too; this is the same rule stated where it can
+              // be read, rather than resting on the order of two CSS files.
+              settleUntilMs = landed || placing ? null : state.timeMs + ARM_SETTLE_MS;
+              cueHold = null;
+            }
           }
+          // In the SAME frame as the release, so the longer ease is in force for
+          // the very jump it exists to soften — a class applied on the next frame
+          // would arrive after the arm had already moved. Same ordering rule
+          // `placing` documents above.
+          if (settleUntilMs !== null && state.timeMs >= settleUntilMs) settleUntilMs = null;
+          // Withheld outright under reduced motion rather than shortened in CSS:
+          // `reduce-motion` sits on the deck itself, so a rule for it would have
+          // to out-specify `.dragging .arm` and would then also beat it, putting
+          // an ease back under the cursor. Skipping the class keeps the arm on
+          // its 220ms tracking ease, which is the no-added-animation answer.
+          wroteSettling = cssClass(
+            deck, "settling", settleUntilMs !== null && !host.reducedMotion, wroteSettling,
+          );
           if (!cueHold) {
             // Side-relative, and clamped: while the playing track is on ANOTHER side
             // this pins the arm at that end of the pressing rather than pointing at a

@@ -1258,6 +1258,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   transform: rotate(var(--deg));
   transition: transform .22s linear;
 }
+/* A correction the deck did not choose: the cue was never confirmed and the arm
+   is about to move somewhere the hand did not put it. The tracking ease above is
+   tuned for a cue jump the user asked for and makes this one read as a twitch,
+   so it gets a longer, eased leg that reads as the arm settling. Ahead of the two
+   rules below on purpose — equal specificity, so source order decides, and both a
+   live drag and the sweep home outrank a settle. */
+.settling .arm { transition: transform .5s cubic-bezier(.22,.68,.25,1); }
 /* Under the cursor the tracking ease reads as lag, so the arm follows the hand
    exactly while a drag is live. */
 .dragging .arm { transition: none; }
@@ -2327,8 +2334,36 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 	* it hides is well under a pixel of band), or at the timeout — a host that
 	* never complies gets the arm back, because a hold that could latch would pin
 	* the needle to a groove nothing is playing.
+	*
+	* **An echo is only believed once the host has stopped loading.** This is the
+	* part a timeout alone could not fix, and it is why cueing a remote track still
+	* wobbled after the hold landed. `loadQueueIndex` sets the host's reported track
+	* and position SYNCHRONOUSLY, before a single byte is fetched — so the very next
+	* frame carries exactly the index and position the cue asked for, the echo test
+	* passes, and the hold lets go while the resolve has not even started. Then the
+	* engine installs the stream and starts reporting from its own clock, which
+	* begins at 0 on a fresh load and only reaches the seek once enough of the
+	* stream has buffered. The arm is by then unheld, so it swings to the outer
+	* groove and back: the original wobble, moved later and made worse by exactly
+	* the network latency that made the track remote. Waiting for `loading` to clear
+	* before believing an echo is the only test that can tell the host's intent
+	* apart from its arrival, because both report the same numbers.
+	*
+	* A host too old to report `loading` says `undefined`, which is neither — those
+	* hosts keep the previous behaviour, which is also all they need: a local file
+	* resolves inside a frame or two.
+	*
+	* So the timeout stops being the primary release and becomes a backstop, and it
+	* is measured on the host being IDLE: every loading frame pushes it out, so the
+	* window is "3s after the host went quiet" rather than 3s of wall clock that a
+	* slow stream spends before the interesting part. `CUE_HOLD_CEILING_MS` is what
+	* keeps that from latching on a host stuck loading forever — a long leash, not
+	* no leash. It is generous on purpose: every second of it is a second the user
+	* is watching the needle sit exactly where they put it, which is what they
+	* asked for, while the alternative is a needle that visibly lies.
 	*/
 	var CUE_HOLD_TIMEOUT_MS = 3e3;
+	var CUE_HOLD_CEILING_MS = 3e4;
 	var CUE_HOLD_EPSILON_SECS = 2;
 	/**
 	* How far the deck magnifies while the headshell is being dragged.
@@ -2551,6 +2586,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* reports IS the truth and waiting for a particular one would hold forever.
 		*/
 		let cueHold = null;
+		let settleUntilMs = null;
 		/** The plugin sandbox passes `document: undefined` and a frozen `window`, so
 		*  ambient DOM is unavailable by design. Everything comes through the one
 		*  handle the contract grants: the shadow root. */
@@ -2602,6 +2638,7 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		let wroteLifted = null;
 		let wroteMotorOff = null;
 		let wrotePlacing = null;
+		let wroteSettling = null;
 		/** "No record on the platter" — see the empty branch in frame(). */
 		let wroteEmpty = null;
 		let wroteOffSpeed = null;
@@ -2762,10 +2799,12 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 		* arrives placed (see FRAME_GAP_MS) instead of holding a stale gesture.
 		*/
 		function holdCue(index, secs) {
+			const zero = lastMs ?? 0;
 			cueHold = {
 				index,
 				secs,
-				untilMs: (lastMs ?? 0) + CUE_HOLD_TIMEOUT_MS
+				untilMs: zero + CUE_HOLD_TIMEOUT_MS,
+				ceilingMs: zero + CUE_HOLD_CEILING_MS
 			};
 		}
 		/**
@@ -3127,11 +3166,22 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
 				if (!dragging) {
 					if (empty || parked) {
 						cueHold = null;
+						settleUntilMs = null;
+						wroteSettling = cssClass(deck, "settling", false, wroteSettling);
 						if (restDeg !== null) wroteDeg = styleVar(arm, "--deg", `${restDeg.toFixed(2)}deg`, wroteDeg);
 					} else {
 						if (cueHold) {
-							if (state.currentIndex === cueHold.index && (cueHold.secs === null || Math.abs(state.positionSecs - cueHold.secs) <= CUE_HOLD_EPSILON_SECS) || state.timeMs >= cueHold.untilMs) cueHold = null;
+							const working = state.loading === true;
+							if (working) cueHold.untilMs = state.timeMs + CUE_HOLD_TIMEOUT_MS;
+							const landed = !working && state.currentIndex === cueHold.index && (cueHold.secs === null || Math.abs(state.positionSecs - cueHold.secs) <= CUE_HOLD_EPSILON_SECS);
+							const expired = state.timeMs >= cueHold.untilMs || state.timeMs >= cueHold.ceilingMs;
+							if (landed || expired) {
+								settleUntilMs = landed || placing ? null : state.timeMs + 500;
+								cueHold = null;
+							}
 						}
+						if (settleUntilMs !== null && state.timeMs >= settleUntilMs) settleUntilMs = null;
+						wroteSettling = cssClass(deck, "settling", settleUntilMs !== null && !host.reducedMotion, wroteSettling);
 						if (!cueHold) {
 							const rel = state.currentIndex - (side?.start ?? 0);
 							const idx = Math.max(0, Math.min(bands.length - 1, rel));

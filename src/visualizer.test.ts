@@ -12,7 +12,13 @@ import type {
   PluginVisualizerState,
   PluginVisualizerTrack,
 } from "../types/viboplr-visualizer";
-import { CUE_HOLD_TIMEOUT_MS, createVinylDeckVisualizer, RATE_45 } from "./visualizer";
+import {
+  ARM_SETTLE_MS,
+  CUE_HOLD_CEILING_MS,
+  CUE_HOLD_TIMEOUT_MS,
+  createVinylDeckVisualizer,
+  RATE_45,
+} from "./visualizer";
 import { armAngleDeg, buildArmMount, buildGeometry, layoutBands, positionToRadius } from "./geometry";
 import { SKINS, type DeckSkin } from "./skins";
 import { DECK_CSS } from "./style";
@@ -1770,6 +1776,145 @@ describe("the cue magnifier", () => {
     }
     const want = armAngleDeg(positionToRadius(bandsSL, 0, 30, geoSL), geoSL, mountSL);
     expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+  });
+
+  it("does not believe the echo while the host is still resolving", () => {
+    // What was left of the wobble, and why raising the timeout could never have
+    // fixed it. `loadQueueIndex` sets the host's reported track and position
+    // SYNCHRONOUSLY — before a byte is fetched — so the frame right after the
+    // drop already carries exactly the cue that was asked for. The old test for
+    // "has it landed?" passed on that, the hold let go, and only THEN did the
+    // engine install a remote stream and start reporting from its own clock,
+    // which begins at 0. The arm was unheld by then and swung to the outer
+    // groove. `loading` is the one thing that tells the host's intent apart from
+    // its arrival, because the numbers are identical.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const arm = h.root.querySelector(".arm") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    const dropped = arm.style.getPropertyValue("--deg");
+
+    // The synchronous echo — the cue's own numbers, handed straight back. Held,
+    // because the host says it is still working.
+    v.frame(makeState({ timeMs: 16, loading: true, currentIndex: 4, positionSecs: 100 }));
+    expect(arm.style.getPropertyValue("--deg")).toBe(dropped);
+
+    // The stream installs and the engine's clock starts at zero. THIS is the
+    // frame that used to throw the arm across the record.
+    v.frame(makeState({ timeMs: 32, loading: true, currentIndex: 4, positionSecs: 0 }));
+    expect(arm.style.getPropertyValue("--deg")).toBe(dropped);
+
+    // Buffered, seek applied, done loading: now the echo means something.
+    v.frame(makeState({ timeMs: 48, loading: false, currentIndex: 4, positionSecs: 100 }));
+    const want = armAngleDeg(positionToRadius(bandsSL, 4, 100, geoSL), geoSL, mountSL);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+  });
+
+  it("waits out a resolve that takes longer than the echo timeout", () => {
+    // The timeout is measured on the host being IDLE, so a slow stream spends
+    // the network's latency rather than the deck's patience. A wall clock here
+    // would hand the arm back mid-resolve — which is the state that reports
+    // zero, so the needle would land on the lead-in of a track that is about to
+    // play from 1:40.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const arm = h.root.querySelector(".arm") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    const dropped = arm.style.getPropertyValue("--deg");
+
+    for (let t = 100; t <= CUE_HOLD_TIMEOUT_MS * 2; t += 100) {
+      v.frame(makeState({ timeMs: t, loading: true, currentIndex: 4, positionSecs: 0 }));
+    }
+    expect(arm.style.getPropertyValue("--deg")).toBe(dropped);
+
+    const t = CUE_HOLD_TIMEOUT_MS * 2 + 100;
+    v.frame(makeState({ timeMs: t, loading: false, currentIndex: 4, positionSecs: 100 }));
+    const want = armAngleDeg(positionToRadius(bandsSL, 4, 100, geoSL), geoSL, mountSL);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+  });
+
+  it("hands the arm back on a host that never stops loading", () => {
+    // A long leash, not no leash: the idle timeout can be pushed out forever by
+    // a host stuck resolving, and a hold that could latch would pin the needle
+    // to a groove nothing is playing.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const arm = h.root.querySelector(".arm") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+
+    for (let t = 1000; t <= CUE_HOLD_CEILING_MS + 1000; t += 1000) {
+      v.frame(makeState({ timeMs: t, loading: true, currentIndex: 0, positionSecs: 30 }));
+    }
+    const want = armAngleDeg(positionToRadius(bandsSL, 0, 30, geoSL), geoSL, mountSL);
+    expect(parseFloat(arm.style.getPropertyValue("--deg"))).toBeCloseTo(want, 1);
+  });
+
+  it("eases a correction it did not choose, and not one it did", () => {
+    // Cosmetic, and the only half of this that reaches a host too old to report
+    // `loading`. A hold that gives up is about to move the arm somewhere the
+    // hand did not put it, and the 220ms linear tracking ease makes that read as
+    // a twitch. A hold that LANDS has nothing to travel — the derived angle is
+    // the one already drawn — so easing it would animate nothing and leave the
+    // class on to catch the next real move.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    for (let t = 100; t <= CUE_HOLD_TIMEOUT_MS + 200; t += 100) {
+      v.frame(makeState({ timeMs: t, playing: true, currentIndex: 0, positionSecs: 30 }));
+    }
+    expect(deck.classList.contains("settling")).toBe(true);
+
+    // And it lets go again rather than staying on to ease ordinary tracking.
+    v.frame(makeState({
+      timeMs: CUE_HOLD_TIMEOUT_MS + 200 + ARM_SETTLE_MS + 100,
+      playing: true, currentIndex: 0, positionSecs: 30,
+    }));
+    expect(deck.classList.contains("settling")).toBe(false);
+
+    // A landing: no correction, no ease.
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    v.frame(makeState({ timeMs: 40000, loading: false, currentIndex: 4, positionSecs: 100 }));
+    expect(deck.classList.contains("settling")).toBe(false);
+  });
+
+  it("arrives placed after a cue it was off-screen for, rather than easing in", () => {
+    // The two features meet here. `holdCue` zeroes its timeout on the last frame
+    // DRAWN, so a deck that went off-screen right after a cue times the hold out
+    // on its first frame back — a give-up, which would normally ease. But that
+    // frame is exactly the one 1.4.3 made arrive in position instead of sweeping
+    // in, so it must not.
+    const h = withLoad(makeHost());
+    const v = createVinylDeckVisualizer("sl1200");
+    v.mount(h.host);
+    const deck = h.root.querySelector(".deck") as HTMLElement;
+    v.frame(makeState({ timeMs: 0, playing: true, currentIndex: 0, positionSecs: 30 }));
+
+    cue(h.root, 4, 100, geoSL, bandsSL);
+    // Gone for a while, then drawn again: `placing` and an expired hold at once.
+    v.frame(makeState({ timeMs: 60000, playing: true, currentIndex: 0, positionSecs: 30 }));
+    expect(deck.classList.contains("placing")).toBe(true);
+    expect(deck.classList.contains("settling")).toBe(false);
+  });
+
+  it("keeps the arm under the hand even while a settle is running", () => {
+    // Equal specificity, so source order decides. A settle that outran
+    // `.dragging` would put a half-second lag under the cursor.
+    const css = DECK_CSS;
+    expect(css.indexOf(".settling .arm")).toBeLessThan(css.indexOf(".dragging .arm"));
+    expect(css.indexOf(".settling .arm")).toBeLessThan(css.indexOf(".motor-off .arm"));
   });
 
   it("keeps the old play-from-zero path when the host cannot start it again", () => {

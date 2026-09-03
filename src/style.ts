@@ -352,6 +352,13 @@ canvas { position: absolute; inset: 0; border-radius: 50%; display: block; }
   transform: rotate(var(--deg));
   transition: transform .22s linear;
 }
+/* A correction the deck did not choose: the cue was never confirmed and the arm
+   is about to move somewhere the hand did not put it. The tracking ease above is
+   tuned for a cue jump the user asked for and makes this one read as a twitch,
+   so it gets a longer, eased leg that reads as the arm settling. Ahead of the two
+   rules below on purpose — equal specificity, so source order decides, and both a
+   live drag and the sweep home outrank a settle. */
+.settling .arm { transition: transform .5s cubic-bezier(.22,.68,.25,1); }
 /* Under the cursor the tracking ease reads as lag, so the arm follows the hand
    exactly while a drag is live. */
 .dragging .arm { transition: none; }
